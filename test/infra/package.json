@@ -1,0 +1,16 @@
+{
+  "name": "zerodev-omni-sdk-test-infra",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node harness.mjs start",
+    "stop": "node harness.mjs stop",
+    "test": "node harness.mjs test"
+  },
+  "dependencies": {
+    "prool": "^0.2.3",
+    "@pimlico/alto": "^0.0.20",
+    "viem": "^2.0.0",
+    "permissionless": "^0.2.0"
+  }
+}
