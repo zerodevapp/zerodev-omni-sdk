@@ -26,6 +26,23 @@ func main() {
 }
 ```
 
+## Quick Start (Rust)
+
+```rust
+use zerodev_aa::{Context, KernelVersion, Middleware, Call};
+
+let ctx = Context::new(project_id, "", "", 11155111, Middleware::ZeroDev)?;
+let account = ctx.new_account(&private_key, KernelVersion::V3_3, 0)?;
+
+let addr = account.get_address()?;
+let hash = account.send_user_op(&[Call {
+    target: addr,
+    value: [0u8; 32],
+    calldata: vec![],
+}])?;
+// Context and Account are automatically cleaned up on drop.
+```
+
 ## Quick Start (C)
 
 ```c
@@ -56,7 +73,8 @@ src/
 include/aa.h        # C header
 
 bindings/
-└── go/             # Go wrapper
+├── go/             # Go wrapper
+└── rust/           # Rust wrapper (lifetime-safe, auto Drop)
 ```
 
 ## Middleware
@@ -78,6 +96,8 @@ make test           # Run unit tests
 make test-e2e       # Local E2E (Anvil + Alto bundler)
 make test-live      # Live Sepolia (Zig)
 make test-go-live   # Live Sepolia (Go)
+make build-rust     # Build Rust binding
+make test-rust-live # Live Sepolia (Rust)
 ```
 
 Live tests require a `.env` file:
@@ -92,6 +112,6 @@ E2E_PRIVATE_KEY=your-hex-private-key
 | Language | Status |
 |----------|--------|
 | Go | Done |
-| Rust | Planned |
+| Rust | Done |
 | Swift | Planned |
 | Kotlin | Planned |

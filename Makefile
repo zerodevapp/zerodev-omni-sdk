@@ -1,4 +1,4 @@
-.PHONY: build build-release test build-go run-go clean test-live test-go-live
+.PHONY: build build-release test build-go run-go build-rust test-rust-live clean test-live test-go-live
 
 # Load .env if it exists (Make can include KEY=VALUE files directly)
 ifneq (,$(wildcard .env))
@@ -59,7 +59,19 @@ test-go-live: build
 		CGO_LDFLAGS="$(CGO_EXTRA_FLAGS)" \
 		go test -v -count=1 -run TestSendUserOpSepolia ./aa/
 
+# Build Rust binding (requires static lib from `make build`)
+build-rust: build
+	cd bindings/rust && cargo build
+
+# Run Rust live E2E test against ZeroDev Sepolia (requires ZERODEV_PROJECT_ID)
+test-rust-live: build
+	cd bindings/rust && \
+		ZERODEV_PROJECT_ID=$(ZERODEV_PROJECT_ID) \
+		E2E_PRIVATE_KEY=$(or $(E2E_PRIVATE_KEY),ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80) \
+		cargo test --test live_test -- --nocapture
+
 # Clean build artifacts
 clean:
 	rm -rf zig-out zig-cache .zig-cache
 	rm -f bindings/go/example/example
+	cd bindings/rust && cargo clean 2>/dev/null || true

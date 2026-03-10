@@ -1,0 +1,19 @@
+[package]
+name = "zerodev-aa"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+description = "Idiomatic Rust bindings for the ZeroDev Account Abstraction SDK"
+license = "MIT OR Apache-2.0"
+
+[lib]
+crate-type = ["lib"]
+
+[dependencies]
+thiserror = "2"
+hex = "0.4"
+
+[[test]]
+name = "live_test"
+path = "tests/live_test.rs"
+harness = true
