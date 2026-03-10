@@ -19,8 +19,9 @@ func main() {
     defer account.Close()
 
     hash, _ := account.SendUserOp([]aa.Call{{
-        Target: recipientAddr,
-        Value:  [32]byte{},
+        Target:   recipientAddr,
+        Value:    [32]byte{},
+        Calldata: []byte{},
     }})
 }
 ```
