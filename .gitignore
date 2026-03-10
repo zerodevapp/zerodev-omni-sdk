@@ -4,3 +4,4 @@ zig-cache/
 .zig-cache/
 bindings/go/example/example
 test/infra/node_modules/
+bindings/rust/target/
