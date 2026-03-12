@@ -62,6 +62,15 @@ internal interface NativeLib : Library {
     fun aa_userop_apply_paymaster_json(op: Pointer, pm_json: String, pm_json_len: NativeLong): Int
     fun aa_userop_destroy(op: Pointer): Int
 
+    fun aa_wait_for_user_operation_receipt(
+        account: Pointer,
+        userop_hash: ByteArray,
+        timeout_ms: Int,
+        poll_interval_ms: Int,
+        json_out: PointerByReference,
+        json_len_out: NativeLongByReference,
+    ): Int
+
     fun aa_free(ptr: Pointer)
     fun aa_get_last_error(): String?
 }

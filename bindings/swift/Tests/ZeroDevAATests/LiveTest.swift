@@ -38,6 +38,13 @@ func main() throws {
 
     precondition(!hash.isZero, "UserOp hash must not be all zeros")
     print("SendUserOp SUCCESS!")
+
+    // Step 5: Wait for user operation receipt
+    let receipt = try account.waitForUserOperationReceipt(useropHash: hash)
+    print("Receipt: success=\(receipt.success) sender=\(receipt.sender ?? "?") actualGasUsed=\(receipt.actualGasUsed ?? "?")")
+    precondition(receipt.success, "UserOp execution reverted")
+    precondition(receipt.json.contains("\"userOpHash\""), "Receipt must contain userOpHash")
+    print("WaitForUserOperationReceipt SUCCESS!")
 }
 
 try main()

@@ -7,7 +7,7 @@ use std::os::raw::c_char;
 use std::ptr;
 
 pub use error::{AaError, Result};
-pub use types::{Address, Call, Hash, KernelVersion, Middleware};
+pub use types::{Address, Call, Hash, KernelVersion, Middleware, UserOperationReceipt};
 
 /// SDK context holding RPC URLs, chain config, and middleware.
 ///
@@ -147,6 +147,36 @@ impl Account<'_> {
             ))?;
         }
         Ok(Hash(hash))
+    }
+
+    /// Wait for a UserOp to be included on-chain, returning the full receipt.
+    /// Pass 0 for `timeout_ms` to use default (60s), 0 for `poll_interval_ms` to use default (2s).
+    pub fn wait_for_user_operation_receipt(
+        &self,
+        userop_hash: &Hash,
+        timeout_ms: u32,
+        poll_interval_ms: u32,
+    ) -> Result<UserOperationReceipt> {
+        let mut json_ptr: *mut c_char = ptr::null_mut();
+        let mut json_len: usize = 0;
+        unsafe {
+            error::check(ffi::aa_wait_for_user_operation_receipt(
+                self.ptr,
+                userop_hash.0.as_ptr(),
+                timeout_ms,
+                poll_interval_ms,
+                &mut json_ptr,
+                &mut json_len,
+            ))?;
+
+            let s = std::str::from_utf8_unchecked(std::slice::from_raw_parts(
+                json_ptr as *const u8,
+                json_len,
+            ))
+            .to_owned();
+            ffi::aa_free(json_ptr as *mut _);
+            Ok(UserOperationReceipt::from_json(s))
+        }
     }
 
     /// Build a UserOperation from calls (low-level API).

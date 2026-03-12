@@ -152,4 +152,27 @@ test "C API: aa_send_userop full pipeline on Sepolia" {
         }
     }
     try std.testing.expect(!hash_zero);
+
+    // Step 6: Wait for user operation receipt (returns full JSON)
+    var json_ptr: [*]u8 = undefined;
+    var json_len: usize = undefined;
+    const receipt_status = c_api.aa_wait_for_user_operation_receipt(account, &hash_out, 0, 0, &json_ptr, &json_len);
+
+    if (receipt_status != .ok) {
+        const err_msg: [*:0]const u8 = c_api.aa_get_last_error();
+        std.debug.print("aa_wait_for_user_operation_receipt FAILED: {s} (code {d})\n", .{ err_msg, @intFromEnum(receipt_status) });
+        std.debug.print("========================================\n", .{});
+        return error.TestUnexpectedResult;
+    }
+    defer c_api.aa_free(json_ptr);
+
+    const json_str = json_ptr[0..json_len];
+    std.debug.print("C API TEST: Receipt JSON ({d} bytes): {s}\n", .{ json_len, json_str[0..@min(json_len, 200)] });
+
+    // Verify JSON contains expected fields
+    try std.testing.expect(std.mem.indexOf(u8, json_str, "\"success\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json_str, "\"userOpHash\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json_str, "\"receipt\"") != null);
+    std.debug.print("C API TEST: WaitForUserOperationReceipt SUCCESS!\n", .{});
+    std.debug.print("========================================\n", .{});
 }

@@ -98,4 +98,23 @@ func TestSendUserOpSepolia(t *testing.T) {
 	}
 
 	t.Log("SendUserOp SUCCESS!")
+
+	// Step 6: Wait for user operation receipt
+	receipt, err := account.WaitForUserOperationReceipt(hash, 0, 0)
+	if err != nil {
+		t.Fatalf("WaitForUserOperationReceipt failed: %v", err)
+	}
+
+	t.Logf("Receipt: success=%v userOpHash=%s sender=%s actualGasUsed=%s",
+		receipt.Success, receipt.UserOpHash, receipt.Sender, receipt.ActualGasUsed)
+
+	if !receipt.Success {
+		t.Fatal("UserOp execution reverted")
+	}
+
+	if txHash, ok := receipt.Receipt["transactionHash"].(string); ok {
+		t.Logf("Transaction hash: %s", txHash)
+	}
+
+	t.Log("WaitForUserOperationReceipt SUCCESS!")
 }

@@ -44,6 +44,46 @@ public enum Middleware: Sendable {
     case zeroDev
 }
 
+/// Full receipt from eth_getUserOperationReceipt.
+/// Matches the viem UserOperationReceipt type.
+/// Provides both raw JSON access and parsed convenience fields.
+public struct UserOperationReceipt: Sendable {
+    /// The raw JSON response string.
+    public let json: String
+
+    /// Hash of the user operation.
+    public var userOpHash: String { extract("userOpHash") ?? "" }
+    /// Entrypoint address.
+    public var entryPoint: String { extract("entryPoint") ?? "" }
+    /// Sender address.
+    public var sender: String { extract("sender") ?? "" }
+    /// Anti-replay parameter (hex string).
+    public var nonce: String { extract("nonce") ?? "" }
+    /// Paymaster address, if any.
+    public var paymaster: String? { extract("paymaster") }
+    /// Actual gas cost (hex string).
+    public var actualGasCost: String { extract("actualGasCost") ?? "" }
+    /// Actual gas used (hex string).
+    public var actualGasUsed: String { extract("actualGasUsed") ?? "" }
+    /// If the user operation execution was successful.
+    public var success: Bool { parsed?["success"] as? Bool ?? false }
+    /// Revert reason, if unsuccessful.
+    public var reason: String? { extract("reason") }
+    /// Logs emitted during execution.
+    public var logs: [[String: Any]] { parsed?["logs"] as? [[String: Any]] ?? [] }
+    /// Transaction receipt of the user operation execution.
+    public var receipt: [String: Any]? { parsed?["receipt"] as? [String: Any] }
+
+    private var parsed: [String: Any]? {
+        guard let data = json.data(using: .utf8) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
+    private func extract(_ key: String) -> String? {
+        parsed?[key] as? String
+    }
+}
+
 public struct Call: Sendable {
     public let target: Address
     public let value: [UInt8]   // 32 bytes, big-endian u256

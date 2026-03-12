@@ -3,6 +3,7 @@ package dev.zerodev.aa
 import com.sun.jna.Memory
 import com.sun.jna.NativeLong
 import com.sun.jna.Pointer
+import com.sun.jna.ptr.NativeLongByReference
 import com.sun.jna.ptr.PointerByReference
 
 class Account internal constructor(
@@ -30,6 +31,18 @@ class Account internal constructor(
             // memories will be GC'd, but we hold refs to prevent premature collection
             memories.size
         }
+    }
+
+    fun waitForUserOperationReceipt(useropHash: Hash, timeoutMs: Int = 0, pollIntervalMs: Int = 0): UserOperationReceipt {
+        check(!closed) { "Account is closed" }
+        val jsonPtrRef = PointerByReference()
+        val jsonLenRef = NativeLongByReference()
+        checkStatus(NativeLib.INSTANCE.aa_wait_for_user_operation_receipt(ptr, useropHash.bytes, timeoutMs, pollIntervalMs, jsonPtrRef, jsonLenRef))
+        val jsonPtr = jsonPtrRef.value
+        val jsonLen = jsonLenRef.value.toInt()
+        val json = String(jsonPtr.getByteArray(0, jsonLen), Charsets.UTF_8)
+        NativeLib.INSTANCE.aa_free(jsonPtr)
+        return UserOperationReceipt.fromJson(json)
     }
 
     fun buildUserOp(calls: List<Call>): UserOp {

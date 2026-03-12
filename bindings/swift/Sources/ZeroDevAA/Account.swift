@@ -1,4 +1,5 @@
 import CZeroDevAA
+import Foundation
 
 public final class Account: @unchecked Sendable {
     let ptr: OpaquePointer
@@ -28,6 +29,20 @@ public final class Account: @unchecked Sendable {
         }
         try checkResult(status)
         return Hash(bytes: hashOut)
+    }
+
+    public func waitForUserOperationReceipt(useropHash: Hash, timeoutMs: UInt32 = 0, pollIntervalMs: UInt32 = 0) throws -> UserOperationReceipt {
+        var jsonPtr: UnsafeMutablePointer<CChar>?
+        var jsonLen: Int = 0
+        let status = useropHash.bytes.withUnsafeBufferPointer { hashBuf in
+            aa_wait_for_user_operation_receipt(ptr, hashBuf.baseAddress, timeoutMs, pollIntervalMs, &jsonPtr, &jsonLen)
+        }
+        try checkResult(status)
+        guard let rawPtr = jsonPtr else { throw AAError.nullOutPtr }
+        let data = Data(bytes: rawPtr, count: jsonLen)
+        aa_free(rawPtr)
+        guard let json = String(data: data, encoding: .utf8) else { throw AAError.serializeFailed("invalid UTF-8 in receipt JSON") }
+        return UserOperationReceipt(json: json)
     }
 
     public func buildUserOp(calls: [Call]) throws -> UserOp {

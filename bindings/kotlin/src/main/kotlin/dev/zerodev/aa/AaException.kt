@@ -22,7 +22,9 @@ enum class AaStatus(val code: Int) {
     APPLY_JSON_FAILED(18),
     SERIALIZE_FAILED(19),
     NO_GAS_MIDDLEWARE(20),
-    NO_PAYMASTER_MIDDLEWARE(21);
+    NO_PAYMASTER_MIDDLEWARE(21),
+    RECEIPT_TIMEOUT(22),
+    RECEIPT_FAILED(23);
 
     companion object {
         fun fromCode(code: Int): AaStatus? = entries.find { it.code == code }

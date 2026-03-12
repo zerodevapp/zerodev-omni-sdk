@@ -160,6 +160,16 @@ extern "C" {
 
     pub(crate) fn aa_userop_destroy(op: *mut aa_userop_t) -> aa_status;
 
+    // Receipt
+    pub(crate) fn aa_wait_for_user_operation_receipt(
+        account: *mut aa_account_t,
+        userop_hash: *const u8,
+        timeout_ms: u32,
+        poll_interval_ms: u32,
+        json_out: *mut *mut c_char,
+        json_len_out: *mut usize,
+    ) -> aa_status;
+
     // Memory
     pub(crate) fn aa_free(ptr: *mut c_void);
 

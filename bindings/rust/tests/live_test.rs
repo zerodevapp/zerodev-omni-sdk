@@ -1,4 +1,4 @@
-use zerodev_aa::{Address, Call, Context, Hash, KernelVersion, Middleware};
+use zerodev_aa::{Address, Call, Context, Hash, KernelVersion, Middleware, UserOperationReceipt};
 
 /// E2E test: sends a zero-value UserOp to self on Sepolia via ZeroDev.
 ///
@@ -65,4 +65,17 @@ fn send_userop_sepolia() {
 
     assert!(!hash.is_zero(), "UserOp hash must not be all zeros");
     eprintln!("SendUserOp SUCCESS!");
+
+    // Step 6: Wait for user operation receipt
+    let receipt: UserOperationReceipt = account
+        .wait_for_user_operation_receipt(&hash, 0, 0)
+        .expect("wait_for_user_operation_receipt failed");
+    eprintln!(
+        "Receipt: success={} sender={} userOpHash={} actualGasUsed={}",
+        receipt.success, receipt.sender, receipt.user_op_hash, receipt.actual_gas_used,
+    );
+    assert!(receipt.success, "UserOp execution reverted");
+    assert!(!receipt.user_op_hash.is_empty(), "userOpHash must be present");
+    assert!(!receipt.sender.is_empty(), "sender must be present");
+    eprintln!("WaitForUserOperationReceipt SUCCESS!");
 }

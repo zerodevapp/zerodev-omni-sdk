@@ -50,6 +50,10 @@ pub enum AaError {
     NoGasMiddleware,
     #[error("no paymaster middleware set (code 21)")]
     NoPaymasterMiddleware,
+    #[error("receipt polling timed out: {0}")]
+    ReceiptTimeout(String),
+    #[error("receipt polling failed: {0}")]
+    ReceiptFailed(String),
     #[error("unknown error (code {0}): {1}")]
     Unknown(i32, String),
 }
@@ -91,6 +95,8 @@ pub(crate) fn from_status(code: ffi::aa_status) -> AaError {
         19 => AaError::SerializeFailed(msg),
         20 => AaError::NoGasMiddleware,
         21 => AaError::NoPaymasterMiddleware,
+        22 => AaError::ReceiptTimeout(msg),
+        23 => AaError::ReceiptFailed(msg),
         other => AaError::Unknown(other, msg),
     }
 }

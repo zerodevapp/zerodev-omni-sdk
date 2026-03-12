@@ -22,6 +22,8 @@ public enum AAError: Error, Sendable {
     case serializeFailed(String)
     case noGasMiddleware
     case noPaymasterMiddleware
+    case receiptTimeout(String)
+    case receiptFailed(String)
     case unknown(Int32, String)
 }
 
@@ -56,6 +58,8 @@ func checkResult(_ status: aa_status) throws {
     case 19: throw AAError.serializeFailed(msg)
     case 20: throw AAError.noGasMiddleware
     case 21: throw AAError.noPaymasterMiddleware
+    case 22: throw AAError.receiptTimeout(msg)
+    case 23: throw AAError.receiptFailed(msg)
     default: throw AAError.unknown(code, msg)
     }
 }

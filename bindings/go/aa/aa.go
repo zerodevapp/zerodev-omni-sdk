@@ -10,6 +10,7 @@ package aa
 import "C"
 import (
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"unsafe"
 )
@@ -309,6 +310,54 @@ func (a *Account) SendUserOp(calls []Call) ([32]byte, error) {
 	}
 
 	return hash, nil
+}
+
+// UserOperationReceipt is the full receipt from eth_getUserOperationReceipt.
+// Matches the viem UserOperationReceipt type.
+type UserOperationReceipt struct {
+	UserOpHash    string           `json:"userOpHash"`
+	EntryPoint    string           `json:"entryPoint"`
+	Sender        string           `json:"sender"`
+	Nonce         string           `json:"nonce"`
+	Paymaster     string           `json:"paymaster,omitempty"`
+	ActualGasCost string           `json:"actualGasCost"`
+	ActualGasUsed string           `json:"actualGasUsed"`
+	Success       bool             `json:"success"`
+	Reason        string           `json:"reason,omitempty"`
+	Logs          []map[string]any `json:"logs"`
+	Receipt       map[string]any   `json:"receipt"`
+}
+
+// WaitForUserOperationReceipt polls for a UserOp receipt until it's included or times out.
+// Pass 0 for timeoutMs to use default (60s), 0 for pollIntervalMs to use default (2s).
+func (a *Account) WaitForUserOperationReceipt(useropHash [32]byte, timeoutMs, pollIntervalMs uint32) (*UserOperationReceipt, error) {
+	if a.acc == nil {
+		return nil, fmt.Errorf("account is nil")
+	}
+
+	var jsonPtr *C.char
+	var jsonLen C.size_t
+	status := C.aa_wait_for_user_operation_receipt(
+		a.acc,
+		(*C.uint8_t)(unsafe.Pointer(&useropHash[0])),
+		C.uint32_t(timeoutMs),
+		C.uint32_t(pollIntervalMs),
+		(**C.char)(unsafe.Pointer(&jsonPtr)),
+		&jsonLen,
+	)
+	if status != C.AA_OK {
+		return nil, fmt.Errorf("aa_wait_for_user_operation_receipt failed: %s (code %d)", C.GoString(C.aa_get_last_error()), int(status))
+	}
+	defer C.aa_free(unsafe.Pointer(jsonPtr))
+
+	jsonBytes := C.GoBytes(unsafe.Pointer(jsonPtr), C.int(jsonLen))
+
+	var receipt UserOperationReceipt
+	if err := json.Unmarshal(jsonBytes, &receipt); err != nil {
+		return nil, fmt.Errorf("failed to parse receipt JSON: %w", err)
+	}
+
+	return &receipt, nil
 }
 
 // GetLastError returns the last error message from the SDK.

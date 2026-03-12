@@ -1,5 +1,9 @@
 package dev.zerodev.aa
 
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+
 @JvmInline
 value class Address(val bytes: ByteArray) {
     init {
@@ -41,6 +45,43 @@ enum class KernelVersion(val code: Int) {
 
 enum class Middleware {
     ZERODEV,
+}
+
+/**
+ * Full receipt from eth_getUserOperationReceipt.
+ * Matches the viem UserOperationReceipt type.
+ */
+@Serializable
+data class UserOperationReceipt(
+    /** Hash of the user operation. */
+    val userOpHash: String = "",
+    /** Entrypoint address. */
+    val entryPoint: String = "",
+    /** Sender address. */
+    val sender: String = "",
+    /** Anti-replay parameter (hex string). */
+    val nonce: String = "",
+    /** Paymaster address, if any. */
+    val paymaster: String? = null,
+    /** Actual gas cost (hex string). */
+    val actualGasCost: String = "",
+    /** Actual gas used (hex string). */
+    val actualGasUsed: String = "",
+    /** If the user operation execution was successful. */
+    val success: Boolean = false,
+    /** Revert reason, if unsuccessful. */
+    val reason: String? = null,
+    /** Logs emitted during execution. */
+    val logs: List<JsonElement> = emptyList(),
+    /** Transaction receipt of the user operation execution. */
+    val receipt: JsonElement? = null,
+) {
+    companion object {
+        private val json = Json { ignoreUnknownKeys = true }
+
+        fun fromJson(jsonStr: String): UserOperationReceipt =
+            json.decodeFromString(serializer(), jsonStr)
+    }
 }
 
 data class Call(

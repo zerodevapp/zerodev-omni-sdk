@@ -32,6 +32,13 @@ class LiveTest {
 
                 assertFalse(hash.isZero, "UserOp hash must not be all zeros")
                 println("SendUserOp SUCCESS!")
+
+                val receipt = account.waitForUserOperationReceipt(hash)
+                println("Receipt: success=${receipt.success} sender=${receipt.sender} userOpHash=${receipt.userOpHash} actualGasUsed=${receipt.actualGasUsed}")
+                assert(receipt.success) { "UserOp execution reverted" }
+                assert(receipt.userOpHash.isNotEmpty()) { "userOpHash must be present" }
+                assert(receipt.sender.isNotEmpty()) { "sender must be present" }
+                println("WaitForUserOperationReceipt SUCCESS!")
             }
         }
     }

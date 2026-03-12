@@ -77,6 +77,8 @@ pub const Status = enum(c_int) {
     serialize_failed = 19,
     no_gas_middleware = 20,
     no_paymaster_middleware = 21,
+    receipt_timeout = 22,
+    receipt_failed = 23,
 };
 
 // ---- Middleware types ----
@@ -788,10 +790,7 @@ pub export fn aa_userop_destroy(op: ?*UserOpImpl) callconv(.c) Status {
 }
 
 pub export fn aa_free(ptr: ?*anyopaque) callconv(.c) void {
-    // For SDK-allocated variable buffers (JSON output, etc.)
-    // The caller must track the length separately.
-    // In practice, we use c_allocator which can free without size.
-    _ = ptr;
+    if (ptr) |p| std.c.free(p);
 }
 
 pub export fn aa_get_last_error() callconv(.c) [*:0]const u8 {
@@ -1029,4 +1028,99 @@ pub export fn aa_send_userop(
     _ = op_hash_hex;
 
     return .ok;
+}
+
+// ---- Receipt polling ----
+
+pub export fn aa_wait_for_user_operation_receipt(
+    account: ?*AccountImpl,
+    userop_hash: ?[*]const u8,
+    timeout_ms: u32,
+    poll_interval_ms: u32,
+    json_out: ?*[*]u8,
+    json_len_out: ?*usize,
+) callconv(.c) Status {
+    const acc = account orelse return .null_account;
+    if (userop_hash == null) return .null_out_ptr;
+    if (json_out == null) return .null_out_ptr;
+    if (json_len_out == null) return .null_out_ptr;
+
+    const allocator = acc.context.allocator;
+
+    // Defaults: 60s timeout, 2s poll interval
+    const timeout: u64 = if (timeout_ms == 0) 60_000 else @as(u64, timeout_ms);
+    const interval: u64 = if (poll_interval_ms == 0) 2_000 else @as(u64, poll_interval_ms);
+
+    // Build 0x-prefixed hex string from hash bytes
+    var hash_hex_buf: [66]u8 = undefined;
+    hash_hex_buf[0] = '0';
+    hash_hex_buf[1] = 'x';
+    const hex_chars = "0123456789abcdef";
+    for (0..32) |i| {
+        const b = userop_hash.?[i];
+        hash_hex_buf[2 + i * 2] = hex_chars[b >> 4];
+        hash_hex_buf[2 + i * 2 + 1] = hex_chars[b & 0x0f];
+    }
+
+    // Resolve RPC URL
+    const rpc_url: []const u8 = if (acc.context.bundler_url.len > 0)
+        acc.context.bundler_url
+    else
+        core.buildRpcUrl(allocator, acc.context.project_id, acc.context.chain_id) catch {
+            setLastError("failed to build RPC URL for receipt polling", .{});
+            return .receipt_failed;
+        };
+    const url_allocated = acc.context.bundler_url.len == 0;
+    defer if (url_allocated) allocator.free(@constCast(rpc_url));
+
+    var rpc = Client.init(allocator, rpc_url) catch {
+        setLastError("failed to create RPC client for receipt polling", .{});
+        return .receipt_failed;
+    };
+    defer rpc.deinit();
+
+    // Build RPC params: [userOpHash]
+    var params_arr = std.json.Array.init(allocator);
+    defer params_arr.deinit();
+    params_arr.append(.{ .string = &hash_hex_buf }) catch {
+        setLastError("failed to build RPC params", .{});
+        return .receipt_failed;
+    };
+
+    // Poll loop
+    var elapsed: u64 = 0;
+    while (elapsed < timeout) {
+        const result = rpc.call("eth_getUserOperationReceipt", .{ .array = params_arr }) catch |err| {
+            if (err == error.JsonRpcError) {
+                // Not found yet, keep polling
+                std.Thread.sleep(interval * std.time.ns_per_ms);
+                elapsed += interval;
+                continue;
+            }
+            setLastError("eth_getUserOperationReceipt failed: {s}", .{@errorName(err)});
+            return .receipt_failed;
+        };
+
+        if (result == .null) {
+            transport.freeValue(allocator, result);
+            std.Thread.sleep(interval * std.time.ns_per_ms);
+            elapsed += interval;
+            continue;
+        }
+
+        defer transport.freeValue(allocator, result);
+
+        // Stringify the full receipt JSON
+        const json_str = std.json.Stringify.valueAlloc(allocator, result, .{}) catch {
+            setLastError("failed to serialize receipt JSON", .{});
+            return .serialize_failed;
+        };
+
+        json_out.?.* = json_str.ptr;
+        json_len_out.?.* = json_str.len;
+        return .ok;
+    }
+
+    setLastError("receipt polling timed out after {d}ms", .{timeout});
+    return .receipt_timeout;
 }

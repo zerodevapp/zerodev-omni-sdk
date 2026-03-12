@@ -33,6 +33,8 @@ typedef enum {
     AA_SERIALIZE_FAILED = 19,
     AA_NO_GAS_MIDDLEWARE = 20,
     AA_NO_PAYMASTER_MIDDLEWARE = 21,
+    AA_RECEIPT_TIMEOUT = 22,
+    AA_RECEIPT_FAILED = 23,
 } aa_status;
 
 /* ---- Kernel version enum ---- */
@@ -177,6 +179,31 @@ aa_status aa_userop_apply_paymaster_json(aa_userop_t *op,
                                          size_t pm_json_len);
 
 aa_status aa_userop_destroy(aa_userop_t *op);
+
+/* ---- Receipt (poll for UserOp inclusion) ---- */
+
+/**
+ * Wait for a UserOp to be included on-chain, returning the full
+ * eth_getUserOperationReceipt JSON response.
+ *
+ * Polls every poll_interval_ms, up to timeout_ms.
+ * Pass 0 for timeout_ms to use default (60 seconds).
+ * Pass 0 for poll_interval_ms to use default (2 seconds).
+ *
+ * On success, *json_out is a heap-allocated JSON string that the caller
+ * must free with aa_free(). *json_len_out is set to the string length.
+ *
+ * The JSON response follows the ERC-4337 eth_getUserOperationReceipt schema:
+ *   { userOpHash, entryPoint, sender, nonce, paymaster,
+ *     actualGasCost, actualGasUsed, success, logs, receipt }
+ */
+aa_status aa_wait_for_user_operation_receipt(
+    aa_account_t *account,
+    const uint8_t userop_hash[32],
+    uint32_t timeout_ms,
+    uint32_t poll_interval_ms,
+    char **json_out,
+    size_t *json_len_out);
 
 /* ---- Memory management ---- */
 
