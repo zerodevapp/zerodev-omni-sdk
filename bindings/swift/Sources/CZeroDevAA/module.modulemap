@@ -1,0 +1,4 @@
+module CZeroDevAA {
+    header "include/aa.h"
+    export *
+}
