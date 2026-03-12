@@ -43,6 +43,37 @@ let hash = account.send_user_op(&[Call {
 // Context and Account are automatically cleaned up on drop.
 ```
 
+## Quick Start (Swift)
+
+```swift
+import ZeroDevAA
+
+let ctx = try Context(projectID: projectID, chainID: 11155111, middleware: .zeroDev)
+let account = try ctx.newAccount(privateKey: privateKey, version: .v3_3)
+
+let addr = try account.getAddress()
+let hash = try account.sendUserOp(calls: [
+    Call(target: addr)
+])
+// Context and Account are automatically cleaned up via deinit.
+```
+
+## Quick Start (Kotlin)
+
+```kotlin
+import dev.zerodev.aa.*
+
+Context.create(projectId, chainId = 11155111).use { ctx ->
+    ctx.newAccount(privateKey, KernelVersion.V3_3).use { account ->
+        val addr = account.getAddress()
+        val hash = account.sendUserOp(listOf(
+            Call(target = addr)
+        ))
+    }
+}
+// .use {} blocks ensure deterministic cleanup.
+```
+
 ## Quick Start (C)
 
 ```c
@@ -74,7 +105,9 @@ include/aa.h        # C header
 
 bindings/
 ├── go/             # Go wrapper
-└── rust/           # Rust wrapper (lifetime-safe, auto Drop)
+├── rust/           # Rust wrapper (lifetime-safe, auto Drop)
+├── swift/          # Swift wrapper (SPM, deinit cleanup)
+└── kotlin/         # Kotlin wrapper (JNA, AutoCloseable)
 ```
 
 ## Middleware
@@ -98,6 +131,10 @@ make test-live      # Live Sepolia (Zig)
 make test-go-live   # Live Sepolia (Go)
 make build-rust     # Build Rust binding
 make test-rust-live # Live Sepolia (Rust)
+make build-swift    # Build Swift binding
+make test-swift-live  # Live Sepolia (Swift)
+make build-kotlin   # Build Kotlin binding
+make test-kotlin-live # Live Sepolia (Kotlin)
 ```
 
 Live tests require a `.env` file:
@@ -113,5 +150,5 @@ E2E_PRIVATE_KEY=your-hex-private-key
 |----------|--------|
 | Go | Done |
 | Rust | Done |
-| Swift | Planned |
-| Kotlin | Planned |
+| Swift | Done |
+| Kotlin | Done |
