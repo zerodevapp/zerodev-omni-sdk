@@ -93,6 +93,8 @@ typedef struct {
  * Called by aa_send_userop to sponsor UserOperations.
  * Receives UserOp JSON, entry point, chain ID, and phase.
  * paymaster_data in result is allocated by the middleware; freed by the caller.
+ *
+ * Optional: if not set, aa_send_userop sends unsponsored (user pays gas).
  */
 typedef aa_status (*aa_paymaster_fn)(aa_context_t *ctx,
                                      const char *userop_json,

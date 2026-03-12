@@ -11,8 +11,9 @@ import (
 // TestSendUserOpSepolia exercises the full aa_send_userop pipeline on Sepolia.
 //
 // Requires environment variables:
-//   ZERODEV_PROJECT_ID — ZeroDev project ID
-//   E2E_PRIVATE_KEY    — 32-byte hex private key (with or without 0x prefix)
+//
+//	ZERODEV_PROJECT_ID — ZeroDev project ID
+//	E2E_PRIVATE_KEY    — 32-byte hex private key (with or without 0x prefix)
 //
 // Run via: make test-go-live
 func TestSendUserOpSepolia(t *testing.T) {
@@ -45,7 +46,7 @@ func TestSendUserOpSepolia(t *testing.T) {
 	chainID := uint64(11155111) // Sepolia
 
 	// Step 1: Create context with ZeroDev middleware
-	ctx, err := aa.NewContext(projectID, "", "", chainID, aa.ZeroDev)
+	ctx, err := aa.NewContext(projectID, "", "", chainID, aa.GasZeroDev, aa.PaymasterZeroDev)
 	if err != nil {
 		t.Fatalf("NewContext failed: %v", err)
 	}

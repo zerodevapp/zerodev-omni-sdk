@@ -20,7 +20,7 @@ func main() throws {
     let chainID: UInt64 = 11155111 // Sepolia
 
     // Step 1: Create context with ZeroDev middleware
-    let ctx = try Context(projectID: projectID, chainID: chainID, middleware: .zeroDev)
+    let ctx = try Context(projectID: projectID, chainID: chainID, gasMiddleware: .zeroDev, paymasterMiddleware: .zeroDev)
     print("Context created")
 
     // Step 2: Create account (Kernel v3.3, index 0)

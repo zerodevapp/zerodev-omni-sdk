@@ -75,10 +75,19 @@ impl KernelVersion {
     }
 }
 
-/// Middleware provider for gas pricing and paymaster sponsorship.
+/// Gas pricing middleware provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Middleware {
-    /// ZeroDev: zd_getUserOperationGasPrice + pm_getPaymasterStubData/pm_getPaymasterData.
+pub enum GasMiddleware {
+    /// ZeroDev: calls zd_getUserOperationGasPrice.
+    ZeroDev,
+}
+
+/// Paymaster sponsorship middleware provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaymasterMiddleware {
+    /// No paymaster — send unsponsored (user pays gas).
+    None,
+    /// ZeroDev: calls pm_getPaymasterStubData / pm_getPaymasterData.
     ZeroDev,
 }
 

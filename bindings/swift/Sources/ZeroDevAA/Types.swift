@@ -40,7 +40,17 @@ public enum KernelVersion: Int32, Sendable {
     case v3_3 = 2
 }
 
-public enum Middleware: Sendable {
+/// Gas pricing middleware provider.
+public enum GasMiddleware: Sendable {
+    /// ZeroDev: calls zd_getUserOperationGasPrice.
+    case zeroDev
+}
+
+/// Paymaster sponsorship middleware provider.
+public enum PaymasterMiddleware: Sendable {
+    /// No paymaster — send unsponsored (user pays gas).
+    case none
+    /// ZeroDev: calls pm_getPaymasterStubData / pm_getPaymasterData.
     case zeroDev
 }
 

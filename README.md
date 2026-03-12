@@ -12,7 +12,7 @@ package main
 import "github.com/zerodevapp/zerodev-omni-sdk/bindings/go/aa"
 
 func main() {
-    ctx, _ := aa.NewContext(projectID, "", "", 11155111, aa.ZeroDev)
+    ctx, _ := aa.NewContext(projectID, "", "", 11155111, aa.GasZeroDev, aa.PaymasterZeroDev)
     defer ctx.Close()
 
     account, _ := ctx.NewAccount(privateKey, aa.KernelV3_3, 0)
@@ -29,9 +29,9 @@ func main() {
 ## Quick Start (Rust)
 
 ```rust
-use zerodev_aa::{Context, KernelVersion, Middleware, Call};
+use zerodev_aa::{Context, KernelVersion, GasMiddleware, PaymasterMiddleware, Call};
 
-let ctx = Context::new(project_id, "", "", 11155111, Middleware::ZeroDev)?;
+let ctx = Context::new(project_id, "", "", 11155111, GasMiddleware::ZeroDev, PaymasterMiddleware::ZeroDev)?;
 let account = ctx.new_account(&private_key, KernelVersion::V3_3, 0)?;
 
 let addr = account.get_address()?;
@@ -48,7 +48,7 @@ let hash = account.send_user_op(&[Call {
 ```swift
 import ZeroDevAA
 
-let ctx = try Context(projectID: projectID, chainID: 11155111, middleware: .zeroDev)
+let ctx = try Context(projectID: projectID, chainID: 11155111, gasMiddleware: .zeroDev)
 let account = try ctx.newAccount(privateKey: privateKey, version: .v3_3)
 
 let addr = try account.getAddress()
@@ -112,12 +112,12 @@ bindings/
 
 ## Middleware
 
-Gas pricing and paymaster sponsorship are pluggable function-pointer callbacks. Built-in implementations are provided for ZeroDev:
+Gas pricing and paymaster sponsorship are **independently pluggable** function-pointer callbacks. Built-in implementations are provided for ZeroDev:
 
-- `aa_gas_zerodev` — calls `zd_getUserOperationGasPrice`
-- `aa_paymaster_zerodev` — calls `pm_getPaymasterStubData` / `pm_getPaymasterData`
+- **Gas** (`aa_gas_price_fn`): `aa_gas_zerodev` — calls `zd_getUserOperationGasPrice`
+- **Paymaster** (`aa_paymaster_fn`): `aa_paymaster_zerodev` — calls `pm_getPaymasterStubData` / `pm_getPaymasterData`
 
-Custom middleware can be implemented in any host language by matching the function signature.
+Gas middleware is required. Paymaster middleware is optional — if not set, UserOps are sent unsponsored (user pays gas). Custom middleware can be implemented in any host language by matching the function signature.
 
 ## Build
 

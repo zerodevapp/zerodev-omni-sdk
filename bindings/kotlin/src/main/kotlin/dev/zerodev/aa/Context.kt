@@ -12,21 +12,28 @@ class Context private constructor(internal val ptr: Pointer) : AutoCloseable {
             rpcUrl: String = "",
             bundlerUrl: String = "",
             chainId: Long = 11155111,
-            middleware: Middleware = Middleware.ZERODEV,
+            gasMiddleware: GasMiddleware = GasMiddleware.ZERODEV,
+            paymasterMiddleware: PaymasterMiddleware = PaymasterMiddleware.ZERODEV,
         ): Context {
             val ptrRef = PointerByReference()
             checkStatus(NativeLib.INSTANCE.aa_context_create(projectId, rpcUrl, bundlerUrl, chainId, ptrRef))
             val ctx = ptrRef.value
 
-            when (middleware) {
-                Middleware.ZERODEV -> {
+            when (gasMiddleware) {
+                GasMiddleware.ZERODEV -> {
                     checkStatus(
                         NativeLib.INSTANCE.aa_context_set_gas_middleware(ctx, NativeLib.getGasZerodevPtr()),
                     )
+                }
+            }
+
+            when (paymasterMiddleware) {
+                PaymasterMiddleware.ZERODEV -> {
                     checkStatus(
                         NativeLib.INSTANCE.aa_context_set_paymaster_middleware(ctx, NativeLib.getPaymasterZerodevPtr()),
                     )
                 }
+                PaymasterMiddleware.NONE -> { /* No paymaster — send unsponsored */ }
             }
 
             return Context(ctx)

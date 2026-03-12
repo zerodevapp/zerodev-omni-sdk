@@ -3,17 +3,23 @@ import CZeroDevAA
 public final class Context: @unchecked Sendable {
     let ptr: OpaquePointer
 
-    public init(projectID: String, rpcURL: String = "", bundlerURL: String = "", chainID: UInt64, middleware: Middleware) throws {
+    public init(projectID: String, rpcURL: String = "", bundlerURL: String = "", chainID: UInt64, gasMiddleware: GasMiddleware, paymasterMiddleware: PaymasterMiddleware = .zeroDev) throws {
         var out: OpaquePointer?
         let status = aa_context_create(projectID, rpcURL, bundlerURL, chainID, &out)
         try checkResult(status)
         guard let p = out else { throw AAError.nullOutPtr }
         self.ptr = p
 
-        switch middleware {
+        switch gasMiddleware {
         case .zeroDev:
             try checkResult(aa_context_set_gas_middleware(ptr, aa_gas_zerodev))
+        }
+
+        switch paymasterMiddleware {
+        case .zeroDev:
             try checkResult(aa_context_set_paymaster_middleware(ptr, aa_paymaster_zerodev))
+        case .none:
+            break
         }
     }
 

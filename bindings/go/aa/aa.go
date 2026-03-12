@@ -24,12 +24,22 @@ const (
 	KernelV3_3 KernelVersion = 2
 )
 
-// Middleware selects which provider to use for gas pricing and paymaster.
-type Middleware int
+// GasMiddleware selects the gas pricing provider.
+type GasMiddleware int
 
 const (
-	// ZeroDev uses zd_getUserOperationGasPrice + pm_getPaymasterStubData/pm_getPaymasterData.
-	ZeroDev Middleware = iota
+	// GasZeroDev uses zd_getUserOperationGasPrice.
+	GasZeroDev GasMiddleware = iota
+)
+
+// PaymasterMiddleware selects the paymaster sponsorship provider.
+type PaymasterMiddleware int
+
+const (
+	// PaymasterNone sends unsponsored UserOps (user pays gas).
+	PaymasterNone PaymasterMiddleware = iota
+	// PaymasterZeroDev uses pm_getPaymasterStubData/pm_getPaymasterData.
+	PaymasterZeroDev
 )
 
 // Context holds RPC URLs and chain configuration.
@@ -37,8 +47,8 @@ type Context struct {
 	ctx *C.aa_context_t
 }
 
-// NewContext creates a new SDK context with the specified middleware.
-func NewContext(projectID, rpcURL, bundlerURL string, chainID uint64, mw Middleware) (*Context, error) {
+// NewContext creates a new SDK context with the specified gas and paymaster middleware.
+func NewContext(projectID, rpcURL, bundlerURL string, chainID uint64, gas GasMiddleware, paymaster PaymasterMiddleware) (*Context, error) {
 	cProjectID := C.CString(projectID)
 	defer C.free(unsafe.Pointer(cProjectID))
 	cRpcURL := C.CString(rpcURL)
@@ -52,13 +62,22 @@ func NewContext(projectID, rpcURL, bundlerURL string, chainID uint64, mw Middlew
 		return nil, fmt.Errorf("aa_context_create failed: %s (code %d)", C.GoString(C.aa_get_last_error()), int(status))
 	}
 
-	switch mw {
-	case ZeroDev:
+	switch gas {
+	case GasZeroDev:
 		C.aa_context_set_gas_middleware(ctx, C.aa_gas_price_fn(C.aa_gas_zerodev))
-		C.aa_context_set_paymaster_middleware(ctx, C.aa_paymaster_fn(C.aa_paymaster_zerodev))
 	default:
 		C.aa_context_destroy(ctx)
-		return nil, fmt.Errorf("unknown middleware: %d", mw)
+		return nil, fmt.Errorf("unknown gas middleware: %d", gas)
+	}
+
+	switch paymaster {
+	case PaymasterZeroDev:
+		C.aa_context_set_paymaster_middleware(ctx, C.aa_paymaster_fn(C.aa_paymaster_zerodev))
+	case PaymasterNone:
+		// No paymaster — send unsponsored
+	default:
+		C.aa_context_destroy(ctx)
+		return nil, fmt.Errorf("unknown paymaster middleware: %d", paymaster)
 	}
 
 	return &Context{ctx: ctx}, nil

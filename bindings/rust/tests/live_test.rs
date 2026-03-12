@@ -1,4 +1,4 @@
-use zerodev_aa::{Address, Call, Context, Hash, KernelVersion, Middleware, UserOperationReceipt};
+use zerodev_aa::{Address, Call, Context, GasMiddleware, Hash, KernelVersion, PaymasterMiddleware, UserOperationReceipt};
 
 /// E2E test: sends a zero-value UserOp to self on Sepolia via ZeroDev.
 ///
@@ -39,7 +39,7 @@ fn send_userop_sepolia() {
     let chain_id: u64 = 11155111; // Sepolia
 
     // Step 1: Create context with ZeroDev middleware
-    let ctx = Context::new(&project_id, "", "", chain_id, Middleware::ZeroDev)
+    let ctx = Context::new(&project_id, "", "", chain_id, GasMiddleware::ZeroDev, PaymasterMiddleware::ZeroDev)
         .expect("Context::new failed");
     eprintln!("Context created");
 

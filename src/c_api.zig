@@ -908,16 +908,14 @@ pub export fn aa_send_userop(
 
     var val = acc.ecdsa.validator();
 
-    const pm_mw = acc.context.paymaster_middleware orelse {
-        setLastError("no paymaster middleware set — call aa_context_set_paymaster_middleware first", .{});
-        return .no_paymaster_middleware;
-    };
+    // Paymaster middleware is optional — if not set, send unsponsored (user pays gas)
+    const pm_mw = acc.context.paymaster_middleware;
 
     // Helper: sign UserOp, serialize to JSON string, call paymaster middleware
     const ep_hex: [*:0]const u8 = core.ENTRY_POINT_V07;
 
-    // Step 6: Paymaster stub (before gas estimation)
-    {
+    // Step 6: Paymaster stub (before gas estimation) — skip if no paymaster
+    if (pm_mw) |mw| {
         const stub_hash = user_op.computeHash(entry_point, @as(u256, chain_id));
         const stub_sig = val.signUserOp(stub_hash.bytes) catch {
             setLastError("signing for paymaster stub failed", .{});
@@ -927,7 +925,7 @@ pub export fn aa_send_userop(
         const stub_json_str = std.json.Stringify.valueAlloc(a, stub_json_val, .{}) catch return .serialize_failed;
 
         var pm_result: PaymasterResult = undefined;
-        const pm_status = pm_mw(acc.context, stub_json_str.ptr, stub_json_str.len, ep_hex, chain_id, .stub, &pm_result);
+        const pm_status = mw(acc.context, stub_json_str.ptr, stub_json_str.len, ep_hex, chain_id, .stub, &pm_result);
         if (pm_status != .ok) return pm_status;
         defer if (pm_result.paymaster_data) |p| allocator.free(p[0..pm_result.paymaster_data_len]);
 
@@ -965,8 +963,8 @@ pub export fn aa_send_userop(
     const pvg_u128: u128 = @truncate(gas.pre_verification_gas);
     user_op.pre_verification_gas = gas.pre_verification_gas + pvg_u128 / 5;
 
-    // Step 9: Paymaster final (paymaster signs over the final gas values)
-    {
+    // Step 9: Paymaster final (paymaster signs over the final gas values) — skip if no paymaster
+    if (pm_mw) |mw| {
         // First repack with estimated gas limits so the paymaster sees correct values
         const pm_packed_est = paymaster_mod.packPaymasterAndData(
             a,
@@ -986,7 +984,7 @@ pub export fn aa_send_userop(
         const final_json_str = std.json.Stringify.valueAlloc(a, final_json_val, .{}) catch return .serialize_failed;
 
         var pm_result: PaymasterResult = undefined;
-        const pm_status = pm_mw(acc.context, final_json_str.ptr, final_json_str.len, ep_hex, chain_id, .final, &pm_result);
+        const pm_status = mw(acc.context, final_json_str.ptr, final_json_str.len, ep_hex, chain_id, .final, &pm_result);
         if (pm_status != .ok) return pm_status;
         defer if (pm_result.paymaster_data) |p| allocator.free(p[0..pm_result.paymaster_data_len]);
 

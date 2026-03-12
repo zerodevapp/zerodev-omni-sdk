@@ -7,7 +7,7 @@ use std::os::raw::c_char;
 use std::ptr;
 
 pub use error::{AaError, Result};
-pub use types::{Address, Call, Hash, KernelVersion, Middleware, UserOperationReceipt};
+pub use types::{Address, Call, GasMiddleware, Hash, KernelVersion, PaymasterMiddleware, UserOperationReceipt};
 
 /// SDK context holding RPC URLs, chain config, and middleware.
 ///
@@ -28,7 +28,8 @@ impl Context {
         rpc_url: &str,
         bundler_url: &str,
         chain_id: u64,
-        middleware: Middleware,
+        gas: GasMiddleware,
+        paymaster: PaymasterMiddleware,
     ) -> Result<Self> {
         let c_project_id = CString::new(project_id).map_err(|_| AaError::InvalidUrl)?;
         let c_rpc_url = CString::new(rpc_url).map_err(|_| AaError::InvalidUrl)?;
@@ -45,18 +46,25 @@ impl Context {
             ))?;
         }
 
-        // Set middleware
-        match middleware {
-            Middleware::ZeroDev => unsafe {
+        // Set gas middleware
+        match gas {
+            GasMiddleware::ZeroDev => unsafe {
                 error::check(ffi::aa_context_set_gas_middleware(
                     ctx,
                     Some(ffi::aa_gas_zerodev),
                 ))?;
+            },
+        }
+
+        // Set paymaster middleware (optional)
+        match paymaster {
+            PaymasterMiddleware::ZeroDev => unsafe {
                 error::check(ffi::aa_context_set_paymaster_middleware(
                     ctx,
                     Some(ffi::aa_paymaster_zerodev),
                 ))?;
             },
+            PaymasterMiddleware::None => {}
         }
 
         Ok(Self { ptr: ctx })

@@ -43,7 +43,17 @@ enum class KernelVersion(val code: Int) {
     V3_3(2),
 }
 
-enum class Middleware {
+/** Gas pricing middleware provider. */
+enum class GasMiddleware {
+    /** ZeroDev: calls zd_getUserOperationGasPrice. */
+    ZERODEV,
+}
+
+/** Paymaster sponsorship middleware provider. */
+enum class PaymasterMiddleware {
+    /** No paymaster — send unsponsored (user pays gas). */
+    NONE,
+    /** ZeroDev: calls pm_getPaymasterStubData / pm_getPaymasterData. */
     ZERODEV,
 }
 
