@@ -23,6 +23,9 @@ func main() {
         Value:    [32]byte{},
         Calldata: []byte{},
     }})
+
+    receipt, _ := account.WaitForUserOperationReceipt(hash, 0, 0)
+    fmt.Println("success:", receipt.Success)
 }
 ```
 
@@ -40,6 +43,9 @@ let hash = account.send_user_op(&[Call {
     value: [0u8; 32],
     calldata: vec![],
 }])?;
+
+let receipt = account.wait_for_user_operation_receipt(&hash, 0, 0)?;
+println!("success: {}", receipt.success);
 // Context and Account are automatically cleaned up on drop.
 ```
 
@@ -55,6 +61,9 @@ let addr = try account.getAddress()
 let hash = try account.sendUserOp(calls: [
     Call(target: addr)
 ])
+
+let receipt = try account.waitForUserOperationReceipt(useropHash: hash)
+print("success: \(receipt.success)")
 // Context and Account are automatically cleaned up via deinit.
 ```
 
@@ -69,6 +78,9 @@ Context.create(projectId, chainId = 11155111).use { ctx ->
         val hash = account.sendUserOp(listOf(
             Call(target = addr)
         ))
+
+        val receipt = account.waitForUserOperationReceipt(hash)
+        println("success: ${receipt.success}")
     }
 }
 // .use {} blocks ensure deterministic cleanup.
@@ -90,6 +102,10 @@ aa_account_create(ctx, private_key, AA_KERNEL_V3_3, 0, &account);
 aa_call_t call = { .target = recipient, .value_be = {0} };
 uint8_t hash[32];
 aa_send_userop(account, &call, 1, hash);
+
+char *json; size_t json_len;
+aa_wait_for_user_operation_receipt(account, hash, 0, 0, &json, &json_len);
+aa_free(json);
 ```
 
 ## Architecture
