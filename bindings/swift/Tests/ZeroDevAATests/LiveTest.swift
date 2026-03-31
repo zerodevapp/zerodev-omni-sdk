@@ -23,8 +23,9 @@ func main() throws {
     let ctx = try Context(projectID: projectID, chainID: chainID, gasMiddleware: .zeroDev, paymasterMiddleware: .zeroDev)
     print("Context created")
 
-    // Step 2: Create account (Kernel v3.3, index 0)
-    let account = try ctx.newAccount(privateKey: privateKey, version: .v3_3)
+    // Step 2: Create signer + account (Kernel v3.3, index 0)
+    let signer = try Signer.local(privateKey: privateKey)
+    let account = try ctx.newAccount(signer: signer, version: .v3_3)
 
     // Step 3: Get address
     let addr = try account.getAddress()

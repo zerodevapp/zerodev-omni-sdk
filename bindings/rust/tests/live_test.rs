@@ -1,4 +1,4 @@
-use zerodev_aa::{Address, Call, Context, GasMiddleware, Hash, KernelVersion, PaymasterMiddleware, UserOperationReceipt};
+use zerodev_aa::{Address, Call, Context, Signer, GasMiddleware, Hash, KernelVersion, PaymasterMiddleware, UserOperationReceipt};
 
 /// E2E test: sends a zero-value UserOp to self on Sepolia via ZeroDev.
 ///
@@ -43,9 +43,10 @@ fn send_userop_sepolia() {
         .expect("Context::new failed");
     eprintln!("Context created");
 
-    // Step 2: Create account (Kernel v3.3, index 0)
+    // Step 2: Create signer + account (Kernel v3.3, index 0)
+    let signer = Signer::local(&private_key).expect("Signer::local failed");
     let account = ctx
-        .new_account(&private_key, KernelVersion::V3_3, 0)
+        .new_account(&signer, KernelVersion::V3_3, 0)
         .expect("new_account failed");
 
     // Step 3: Get address

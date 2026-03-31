@@ -53,8 +53,14 @@ func TestSendUserOpSepolia(t *testing.T) {
 	defer ctx.Close()
 	t.Log("Context created")
 
-	// Step 2: Create account (Kernel v3.3, index 0)
-	account, err := ctx.NewAccount(privateKey, aa.KernelV3_3, 0)
+	// Step 2: Create signer + account (Kernel v3.3, index 0)
+	signer, err := aa.LocalSigner(privateKey)
+	if err != nil {
+		t.Fatalf("LocalSigner failed: %v", err)
+	}
+	defer signer.Close()
+
+	account, err := ctx.NewAccount(signer, aa.KernelV3_3, 0)
 	if err != nil {
 		t.Fatalf("NewAccount failed: %v", err)
 	}

@@ -19,7 +19,8 @@ class LiveTest {
         val chainId = 11155111L // Sepolia
 
         Context.create(projectId, chainId = chainId).use { ctx ->
-            ctx.newAccount(privateKey, KernelVersion.V3_3).use { account ->
+            Signer.local(privateKey).use { signer ->
+            ctx.newAccount(signer, KernelVersion.V3_3).use { account ->
                 val addr = account.getAddress()
                 println("Account address: $addr")
 
@@ -39,6 +40,7 @@ class LiveTest {
                 assert(receipt.userOpHash.isNotEmpty()) { "userOpHash must be present" }
                 assert(receipt.sender.isNotEmpty()) { "sender must be present" }
                 println("WaitForUserOperationReceipt SUCCESS!")
+            }
             }
         }
     }
