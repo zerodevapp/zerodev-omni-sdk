@@ -28,6 +28,8 @@ const signers = @import("signers");
 const Signer = signers.Signer;
 const LocalSigner = signers.local.LocalSigner;
 const JsonRpcSigner = signers.json_rpc.JsonRpcSigner;
+const CustomSigner = signers.custom.CustomSigner;
+const CVTable = signers.custom.CVTable;
 
 // ---- Allocator ----
 
@@ -380,6 +382,7 @@ pub export fn aa_paymaster_zerodev(
 const SignerKind = union(enum) {
     local: LocalSigner,
     json_rpc: JsonRpcSigner,
+    custom: CustomSigner,
 };
 
 pub const SignerImpl = struct {
@@ -390,6 +393,7 @@ pub const SignerImpl = struct {
         return switch (self.kind) {
             .local => |*l| l.signer(),
             .json_rpc => |*r| r.signer(),
+            .custom => |*c| c.signer(),
         };
     }
 };
@@ -438,6 +442,24 @@ pub export fn aa_signer_rpc(
 
     const impl = allocator.create(SignerImpl) catch return .out_of_memory;
     impl.* = .{ .allocator = allocator, .kind = .{ .json_rpc = rpc_signer } };
+    out.?.* = impl;
+    return .ok;
+}
+
+pub export fn aa_signer_custom(
+    vtable: ?*const CVTable,
+    user_ctx: ?*anyopaque,
+    out: ?*?*SignerImpl,
+) callconv(.c) Status {
+    if (out == null) return .null_out_ptr;
+    const vt = vtable orelse return .invalid_signer;
+
+    const allocator = defaultAllocator();
+    const impl = allocator.create(SignerImpl) catch return .out_of_memory;
+    impl.* = .{
+        .allocator = allocator,
+        .kind = .{ .custom = .{ .vtable = vt, .user_ctx = user_ctx } },
+    };
     out.?.* = impl;
     return .ok;
 }

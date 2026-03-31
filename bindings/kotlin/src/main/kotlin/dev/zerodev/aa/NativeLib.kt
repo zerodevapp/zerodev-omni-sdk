@@ -1,12 +1,22 @@
 package dev.zerodev.aa
 
+import com.sun.jna.Callback
 import com.sun.jna.Library
 import com.sun.jna.Native
 import com.sun.jna.NativeLibrary
 import com.sun.jna.NativeLong
 import com.sun.jna.Pointer
+import com.sun.jna.Structure
 import com.sun.jna.ptr.NativeLongByReference
 import com.sun.jna.ptr.PointerByReference
+
+@Structure.FieldOrder("sign_hash", "sign_message", "sign_typed_data_hash", "get_address")
+internal class AaSignerVtable : Structure() {
+    @JvmField var sign_hash: Callback? = null
+    @JvmField var sign_message: Callback? = null
+    @JvmField var sign_typed_data_hash: Callback? = null
+    @JvmField var get_address: Callback? = null
+}
 
 internal interface NativeLib : Library {
     companion object {
@@ -32,6 +42,7 @@ internal interface NativeLib : Library {
 
     fun aa_signer_local(private_key: ByteArray, out: PointerByReference): Int
     fun aa_signer_rpc(rpc_url: String, address: ByteArray, out: PointerByReference): Int
+    fun aa_signer_custom(vtable: Pointer, ctx: Pointer?, out: PointerByReference): Int
     fun aa_signer_destroy(signer: Pointer)
 
     fun aa_account_create(

@@ -6,12 +6,26 @@ package aa
 #include <stdlib.h>
 #include <string.h>
 #include "aa.h"
+
+extern int goSignHash(void *ctx, void *hash, void *sig_out);
+extern int goSignMessage(void *ctx, void *msg, size_t msg_len, void *sig_out);
+extern int goSignTypedDataHash(void *ctx, void *hash, void *sig_out);
+extern int goGetAddress(void *ctx, void *addr_out);
+
+static aa_signer_vtable go_signer_vtable = {
+    (int (*)(void*, const uint8_t[32], uint8_t[65]))goSignHash,
+    (int (*)(void*, const uint8_t*, size_t, uint8_t[65]))goSignMessage,
+    (int (*)(void*, const uint8_t[32], uint8_t[65]))goSignTypedDataHash,
+    (int (*)(void*, uint8_t[20]))goGetAddress,
+};
 */
 import "C"
 import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -44,7 +58,8 @@ const (
 
 // Signer wraps an opaque signer handle.
 type Signer struct {
-	ptr *C.aa_signer_t
+	ptr      *C.aa_signer_t
+	customID *uint64 // non-nil for custom signers; used to clean up registry
 }
 
 // LocalSigner creates a signer from a 32-byte private key.
@@ -78,11 +93,119 @@ func RpcSigner(rpcURL string, address [20]byte) (*Signer, error) {
 	return &Signer{ptr: s}, nil
 }
 
+// SignerFuncs holds the Go callback functions for a custom signer.
+type SignerFuncs struct {
+	SignHash          func(hash [32]byte) ([65]byte, error)
+	SignMessage       func(msg []byte) ([65]byte, error)
+	SignTypedDataHash func(hash [32]byte) ([65]byte, error)
+	GetAddress        func() [20]byte
+}
+
+var (
+	customSignerRegistry sync.Map
+	customSignerCounter  atomic.Uint64
+)
+
+//export goSignHash
+func goSignHash(ctx unsafe.Pointer, hash unsafe.Pointer, sigOut unsafe.Pointer) C.int {
+	id := uint64(uintptr(ctx))
+	val, ok := customSignerRegistry.Load(id)
+	if !ok {
+		return 1
+	}
+	fns := val.(*SignerFuncs)
+
+	var h [32]byte
+	copy(h[:], unsafe.Slice((*byte)(hash), 32))
+
+	sig, err := fns.SignHash(h)
+	if err != nil {
+		return 1
+	}
+
+	copy(unsafe.Slice((*byte)(sigOut), 65), sig[:])
+	return 0
+}
+
+//export goSignMessage
+func goSignMessage(ctx unsafe.Pointer, msg unsafe.Pointer, msgLen C.size_t, sigOut unsafe.Pointer) C.int {
+	id := uint64(uintptr(ctx))
+	val, ok := customSignerRegistry.Load(id)
+	if !ok {
+		return 1
+	}
+	fns := val.(*SignerFuncs)
+
+	goMsg := C.GoBytes(msg, C.int(msgLen))
+
+	sig, err := fns.SignMessage(goMsg)
+	if err != nil {
+		return 1
+	}
+
+	copy(unsafe.Slice((*byte)(sigOut), 65), sig[:])
+	return 0
+}
+
+//export goSignTypedDataHash
+func goSignTypedDataHash(ctx unsafe.Pointer, hash unsafe.Pointer, sigOut unsafe.Pointer) C.int {
+	id := uint64(uintptr(ctx))
+	val, ok := customSignerRegistry.Load(id)
+	if !ok {
+		return 1
+	}
+	fns := val.(*SignerFuncs)
+
+	var h [32]byte
+	copy(h[:], unsafe.Slice((*byte)(hash), 32))
+
+	sig, err := fns.SignTypedDataHash(h)
+	if err != nil {
+		return 1
+	}
+
+	copy(unsafe.Slice((*byte)(sigOut), 65), sig[:])
+	return 0
+}
+
+//export goGetAddress
+func goGetAddress(ctx unsafe.Pointer, addrOut unsafe.Pointer) C.int {
+	id := uint64(uintptr(ctx))
+	val, ok := customSignerRegistry.Load(id)
+	if !ok {
+		return 1
+	}
+	fns := val.(*SignerFuncs)
+
+	addr := fns.GetAddress()
+	copy(unsafe.Slice((*byte)(addrOut), 20), addr[:])
+	return 0
+}
+
+// CustomSigner creates a signer backed by Go callback functions.
+func CustomSigner(fns SignerFuncs) (*Signer, error) {
+	id := customSignerCounter.Add(1)
+	customSignerRegistry.Store(id, &fns)
+
+	var s *C.aa_signer_t
+	status := C.aa_signer_custom(&C.go_signer_vtable, unsafe.Pointer(uintptr(id)), &s)
+	if status != C.AA_OK {
+		customSignerRegistry.Delete(id)
+		return nil, fmt.Errorf("aa_signer_custom failed: %s (code %d)", C.GoString(C.aa_get_last_error()), int(status))
+	}
+
+	return &Signer{ptr: s, customID: &id}, nil
+}
+
 // Close destroys the signer handle.
 func (s *Signer) Close() {
 	if s.ptr != nil {
 		C.aa_signer_destroy(s.ptr)
 		s.ptr = nil
+	}
+	if s.customID != nil {
+		customSignerRegistry.Delete(*s.customID)
+		s.customID = nil
 	}
 }
 
