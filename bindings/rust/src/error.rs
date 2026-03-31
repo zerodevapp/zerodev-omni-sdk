@@ -54,6 +54,8 @@ pub enum AaError {
     ReceiptTimeout(String),
     #[error("receipt polling failed: {0}")]
     ReceiptFailed(String),
+    #[error("invalid signer (code 24)")]
+    InvalidSigner,
     #[error("unknown error (code {0}): {1}")]
     Unknown(i32, String),
 }
@@ -97,6 +99,7 @@ pub(crate) fn from_status(code: ffi::aa_status) -> AaError {
         21 => AaError::NoPaymasterMiddleware,
         22 => AaError::ReceiptTimeout(msg),
         23 => AaError::ReceiptFailed(msg),
+        24 => AaError::InvalidSigner,
         other => AaError::Unknown(other, msg),
     }
 }

@@ -6,10 +6,6 @@
 const std = @import("std");
 
 pub const core = @import("core/root.zig");
-pub const transport = struct {
-    pub const http = @import("transport/http.zig");
-    pub const json_rpc = @import("transport/json_rpc.zig");
-};
 pub const validators = struct {
     pub const Validator = @import("validators/Validator.zig").Validator;
     pub const EcdsaValidator = @import("validators/ecdsa.zig").EcdsaValidator;

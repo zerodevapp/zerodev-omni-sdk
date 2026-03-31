@@ -23,6 +23,11 @@ const paymaster_mod = core.paymaster;
 const transport = @import("transport");
 const Client = transport.Client;
 const EcdsaValidator = @import("validators/ecdsa.zig").EcdsaValidator;
+const Validator = @import("validators/Validator.zig").Validator;
+const signers = @import("signers");
+const Signer = signers.Signer;
+const LocalSigner = signers.local.LocalSigner;
+const JsonRpcSigner = signers.json_rpc.JsonRpcSigner;
 
 // ---- Allocator ----
 
@@ -79,6 +84,7 @@ pub const Status = enum(c_int) {
     no_paymaster_middleware = 21,
     receipt_timeout = 22,
     receipt_failed = 23,
+    invalid_signer = 24,
 };
 
 // ---- Middleware types ----
@@ -369,28 +375,108 @@ pub export fn aa_paymaster_zerodev(
     }
 }
 
+// ---- Signer (opaque handle) ----
+
+const SignerKind = union(enum) {
+    local: LocalSigner,
+    json_rpc: JsonRpcSigner,
+};
+
+pub const SignerImpl = struct {
+    allocator: std.mem.Allocator,
+    kind: SignerKind,
+
+    pub fn getSigner(self: *SignerImpl) Signer {
+        return switch (self.kind) {
+            .local => |*l| l.signer(),
+            .json_rpc => |*r| r.signer(),
+        };
+    }
+};
+
+pub export fn aa_signer_local(
+    private_key: ?[*]const u8,
+    out: ?*?*SignerImpl,
+) callconv(.c) Status {
+    if (out == null) return .null_out_ptr;
+    if (private_key == null) return .invalid_private_key;
+
+    const allocator = defaultAllocator();
+    var pk: [32]u8 = undefined;
+    @memcpy(&pk, private_key.?[0..32]);
+
+    const local = LocalSigner.init(allocator, pk) catch {
+        setLastError("failed to initialize local signer from private key", .{});
+        return .invalid_private_key;
+    };
+
+    const impl = allocator.create(SignerImpl) catch return .out_of_memory;
+    impl.* = .{ .allocator = allocator, .kind = .{ .local = local } };
+    out.?.* = impl;
+    return .ok;
+}
+
+pub export fn aa_signer_rpc(
+    rpc_url: ?[*:0]const u8,
+    address: ?[*]const u8,
+    out: ?*?*SignerImpl,
+) callconv(.c) Status {
+    if (out == null) return .null_out_ptr;
+    const url_ptr = rpc_url orelse return .invalid_signer;
+    if (address == null) return .null_out_ptr;
+
+    const allocator = defaultAllocator();
+    const url = std.mem.span(url_ptr);
+
+    var addr: [20]u8 = undefined;
+    @memcpy(&addr, address.?[0..20]);
+
+    const rpc_signer = JsonRpcSigner.init(allocator, url, addr) catch {
+        setLastError("failed to initialize JSON-RPC signer", .{});
+        return .out_of_memory;
+    };
+
+    const impl = allocator.create(SignerImpl) catch return .out_of_memory;
+    impl.* = .{ .allocator = allocator, .kind = .{ .json_rpc = rpc_signer } };
+    out.?.* = impl;
+    return .ok;
+}
+
+pub export fn aa_signer_destroy(signer: ?*SignerImpl) callconv(.c) void {
+    const s = signer orelse return;
+    if (s.kind == .json_rpc) {
+        var rpc = &s.kind.json_rpc;
+        rpc.deinit();
+    }
+    s.allocator.destroy(s);
+}
+
 // ---- Account ----
 
 pub const AccountImpl = struct {
     context: *ContextImpl,
+    signer: *SignerImpl,
     ecdsa: EcdsaValidator,
     kernel_version: KernelVersion,
     index: u32,
-    private_key: [32]u8,
     owner_address: Address,
     sender_address: Address,
+
+    pub fn getValidator(self: *AccountImpl) Validator {
+        return self.ecdsa.validator();
+    }
 };
 
 pub export fn aa_account_create(
     ctx: ?*ContextImpl,
-    private_key: ?[*]const u8,
+    signer: ?*SignerImpl,
     version: c_int,
     index: u32,
     out: ?*?*AccountImpl,
 ) callconv(.c) Status {
     if (out == null) return .null_out_ptr;
     const c = ctx orelse return .null_context;
-    if (private_key == null) return .invalid_private_key;
+    const s = signer orelse return .invalid_signer;
 
     const allocator = c.allocator;
 
@@ -399,15 +485,8 @@ pub export fn aa_account_create(
         return .invalid_kernel_version;
     };
 
-    var pk: [32]u8 = undefined;
-    @memcpy(&pk, private_key.?[0..32]);
-
-    var ecdsa = EcdsaValidator.init(allocator, pk) catch {
-        setLastError("failed to initialize ECDSA validator from private key", .{});
-        return .invalid_private_key;
-    };
-
-    const owner_addr = ecdsa.owner_address;
+    // Signer is already heap-allocated — vtable pointer is stable
+    const owner_addr = Address.fromBytes(s.getSigner().getAddress());
     const sender_addr = create2.getKernelAddress(owner_addr, @as(u256, index), kv) catch {
         setLastError("failed to compute kernel address", .{});
         return .get_address_failed;
@@ -416,14 +495,12 @@ pub export fn aa_account_create(
     const impl = allocator.create(AccountImpl) catch {
         return .out_of_memory;
     };
-    _ = &ecdsa;
-
     impl.* = .{
         .context = c,
-        .ecdsa = ecdsa,
+        .signer = s,
+        .ecdsa = EcdsaValidator.init(s.getSigner()),
         .kernel_version = kv,
         .index = index,
-        .private_key = pk,
         .owner_address = owner_addr,
         .sender_address = sender_addr,
     };
@@ -441,6 +518,7 @@ pub export fn aa_account_get_address(
     @memcpy(addr_out.?[0..20], &acc.sender_address.bytes);
     return .ok;
 }
+
 
 pub export fn aa_account_destroy(account: ?*AccountImpl) callconv(.c) Status {
     const acc = account orelse return .null_account;
@@ -631,7 +709,7 @@ pub export fn aa_userop_sign(
 
     const hash = user_op.computeHash(entry_point, @as(u256, userop.chain_id));
 
-    var val = acc.ecdsa.validator();
+    var val = acc.getValidator();
     const sig = val.signUserOp(hash.bytes) catch {
         setLastError("ECDSA signing failed", .{});
         return .sign_userop_failed;
@@ -906,7 +984,7 @@ pub export fn aa_send_userop(
         .paymaster_and_data = &[_]u8{},
     };
 
-    var val = acc.ecdsa.validator();
+    var val = acc.getValidator();
 
     // Paymaster middleware is optional — if not set, send unsponsored (user pays gas)
     const pm_mw = acc.context.paymaster_middleware;

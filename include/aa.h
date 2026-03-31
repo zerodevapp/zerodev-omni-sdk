@@ -35,6 +35,7 @@ typedef enum {
     AA_NO_PAYMASTER_MIDDLEWARE = 21,
     AA_RECEIPT_TIMEOUT = 22,
     AA_RECEIPT_FAILED = 23,
+    AA_INVALID_SIGNER = 24,
 } aa_status;
 
 /* ---- Kernel version enum ---- */
@@ -48,6 +49,7 @@ typedef enum {
 /* ---- Opaque handles ---- */
 
 typedef struct aa_context aa_context_t;
+typedef struct aa_signer aa_signer_t;
 typedef struct aa_account aa_account_t;
 typedef struct aa_userop aa_userop_t;
 
@@ -134,10 +136,24 @@ aa_status aa_paymaster_zerodev(aa_context_t *ctx,
                                 aa_pm_phase phase,
                                 aa_paymaster_result_t *out);
 
+/* ---- Signer (create before account) ---- */
+
+/** Create a local signer from a 32-byte private key. */
+aa_status aa_signer_local(const uint8_t private_key[32],
+                           aa_signer_t **out);
+
+/** Create a JSON-RPC signer (Privy, custodial wallets, etc.). */
+aa_status aa_signer_rpc(const char *rpc_url,
+                         const uint8_t address[20],
+                         aa_signer_t **out);
+
+/** Destroy a signer handle. */
+void aa_signer_destroy(aa_signer_t *signer);
+
 /* ---- Account (Kernel v3.x + ECDSA validator) ---- */
 
 aa_status aa_account_create(aa_context_t *ctx,
-                            const uint8_t private_key[32],
+                            aa_signer_t *signer,
                             aa_kernel_version version,
                             uint32_t index,
                             aa_account_t **out);

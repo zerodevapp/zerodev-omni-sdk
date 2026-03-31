@@ -42,6 +42,50 @@ const (
 	PaymasterZeroDev
 )
 
+// Signer wraps an opaque signer handle.
+type Signer struct {
+	ptr *C.aa_signer_t
+}
+
+// LocalSigner creates a signer from a 32-byte private key.
+func LocalSigner(privateKey [32]byte) (*Signer, error) {
+	cKey := (*C.uint8_t)(C.malloc(32))
+	defer C.free(unsafe.Pointer(cKey))
+	C.memcpy(unsafe.Pointer(cKey), unsafe.Pointer(&privateKey[0]), 32)
+
+	var s *C.aa_signer_t
+	status := C.aa_signer_local(cKey, &s)
+	if status != C.AA_OK {
+		return nil, fmt.Errorf("aa_signer_local failed: %s (code %d)", C.GoString(C.aa_get_last_error()), int(status))
+	}
+	return &Signer{ptr: s}, nil
+}
+
+// RpcSigner creates a signer that signs via a JSON-RPC endpoint (Privy, custodial, etc.).
+func RpcSigner(rpcURL string, address [20]byte) (*Signer, error) {
+	cURL := C.CString(rpcURL)
+	defer C.free(unsafe.Pointer(cURL))
+
+	cAddr := (*C.uint8_t)(C.malloc(20))
+	defer C.free(unsafe.Pointer(cAddr))
+	C.memcpy(unsafe.Pointer(cAddr), unsafe.Pointer(&address[0]), 20)
+
+	var s *C.aa_signer_t
+	status := C.aa_signer_rpc(cURL, cAddr, &s)
+	if status != C.AA_OK {
+		return nil, fmt.Errorf("aa_signer_rpc failed: %s (code %d)", C.GoString(C.aa_get_last_error()), int(status))
+	}
+	return &Signer{ptr: s}, nil
+}
+
+// Close destroys the signer handle.
+func (s *Signer) Close() {
+	if s.ptr != nil {
+		C.aa_signer_destroy(s.ptr)
+		s.ptr = nil
+	}
+}
+
 // Context holds RPC URLs and chain configuration.
 type Context struct {
 	ctx *C.aa_context_t
@@ -97,19 +141,17 @@ type Account struct {
 	ctx *Context
 }
 
-// NewAccount creates a new Kernel account from a private key.
-func (c *Context) NewAccount(privateKey [32]byte, version KernelVersion, index uint32) (*Account, error) {
+// NewAccount creates a new Kernel account using the given signer.
+func (c *Context) NewAccount(signer *Signer, version KernelVersion, index uint32) (*Account, error) {
 	if c.ctx == nil {
 		return nil, fmt.Errorf("context is nil")
 	}
-
-	// Allocate private key in C memory to avoid Go pointer rules
-	cKey := (*C.uint8_t)(C.malloc(32))
-	defer C.free(unsafe.Pointer(cKey))
-	C.memcpy(unsafe.Pointer(cKey), unsafe.Pointer(&privateKey[0]), 32)
+	if signer == nil || signer.ptr == nil {
+		return nil, fmt.Errorf("signer is nil")
+	}
 
 	var acc *C.aa_account_t
-	status := C.aa_account_create(c.ctx, cKey, C.aa_kernel_version(version), C.uint32_t(index), &acc)
+	status := C.aa_account_create(c.ctx, signer.ptr, C.aa_kernel_version(version), C.uint32_t(index), &acc)
 	if status != C.AA_OK {
 		return nil, fmt.Errorf("aa_account_create failed: %s (code %d)", C.GoString(C.aa_get_last_error()), int(status))
 	}

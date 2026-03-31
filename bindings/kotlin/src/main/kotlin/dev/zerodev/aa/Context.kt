@@ -41,14 +41,13 @@ class Context private constructor(internal val ptr: Pointer) : AutoCloseable {
     }
 
     fun newAccount(
-        privateKey: ByteArray,
+        signer: Signer,
         version: KernelVersion,
         index: Int = 0,
     ): Account {
         check(!closed) { "Context is closed" }
-        require(privateKey.size == 32) { "privateKey must be 32 bytes, got ${privateKey.size}" }
         val ptrRef = PointerByReference()
-        checkStatus(NativeLib.INSTANCE.aa_account_create(ptr, privateKey, version.code, index, ptrRef))
+        checkStatus(NativeLib.INSTANCE.aa_account_create(ptr, signer.ptr, version.code, index, ptrRef))
         return Account(ptrRef.value, this)
     }
 

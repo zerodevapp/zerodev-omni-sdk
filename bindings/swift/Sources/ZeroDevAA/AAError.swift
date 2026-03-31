@@ -24,6 +24,7 @@ public enum AAError: Error, Sendable {
     case noPaymasterMiddleware
     case receiptTimeout(String)
     case receiptFailed(String)
+    case invalidSigner(String)
     case unknown(Int32, String)
 }
 
@@ -60,6 +61,7 @@ func checkResult(_ status: aa_status) throws {
     case 21: throw AAError.noPaymasterMiddleware
     case 22: throw AAError.receiptTimeout(msg)
     case 23: throw AAError.receiptFailed(msg)
+    case 24: throw AAError.invalidSigner(msg)
     default: throw AAError.unknown(code, msg)
     }
 }

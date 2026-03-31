@@ -23,12 +23,9 @@ public final class Context: @unchecked Sendable {
         }
     }
 
-    public func newAccount(privateKey: [UInt8], version: KernelVersion, index: UInt32 = 0) throws -> Account {
-        precondition(privateKey.count == 32, "privateKey must be 32 bytes")
+    public func newAccount(signer: Signer, version: KernelVersion, index: UInt32 = 0) throws -> Account {
         var out: OpaquePointer?
-        let status = privateKey.withUnsafeBufferPointer { buf in
-            aa_account_create(ptr, buf.baseAddress, aa_kernel_version(rawValue: UInt32(version.rawValue)), index, &out)
-        }
+        let status = aa_account_create(ptr, signer.ptr, aa_kernel_version(rawValue: UInt32(version.rawValue)), index, &out)
         try checkResult(status)
         guard let p = out else { throw AAError.nullOutPtr }
         return Account(ptr: p, context: self)

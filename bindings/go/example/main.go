@@ -28,7 +28,7 @@ func main() {
 	}
 
 	// Create context with ZeroDev middleware (gas + paymaster)
-	ctx, err := aa.NewContext(projectID, rpcURL, bundlerURL, 8453, aa.ZeroDev)
+	ctx, err := aa.NewContext(projectID, rpcURL, bundlerURL, 8453, aa.GasZeroDev, aa.PaymasterZeroDev)
 	if err != nil {
 		fmt.Printf("Error creating context: %v\n", err)
 		return
@@ -36,13 +36,20 @@ func main() {
 	defer ctx.Close()
 	fmt.Println("Context created")
 
-	// Hardhat account #0 private key
+	// Create signer from private key
 	pk, _ := hex.DecodeString("ac0974bec39a17e36ba4a6b4d238ff944bacb35e5dc4700215cf651439dfba4")
 	var privateKey [32]byte
 	copy(privateKey[:], pk)
 
+	signer, err := aa.LocalSigner(privateKey)
+	if err != nil {
+		fmt.Printf("Error creating signer: %v\n", err)
+		return
+	}
+	defer signer.Close()
+
 	// Create account (Kernel v3.3, index 0)
-	account, err := ctx.NewAccount(privateKey, aa.KernelV3_3, 0)
+	account, err := ctx.NewAccount(signer, aa.KernelV3_3, 0)
 	if err != nil {
 		fmt.Printf("Error creating account: %v\n", err)
 		return

@@ -41,12 +41,23 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const signers_mod = b.createModule(.{
+        .root_source_file = b.path("src/signers/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "zigeth", .module = zigeth_mod },
+            .{ .name = "transport", .module = transport_mod },
+        },
+    });
+
     const validators_mod = b.createModule(.{
         .root_source_file = b.path("src/validators/root.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
             .{ .name = "zigeth", .module = zigeth_mod },
+            .{ .name = "signers", .module = signers_mod },
         },
     });
 
@@ -69,6 +80,7 @@ pub fn build(b: *std.Build) void {
     });
     c_api_mod.addImport("zigeth", zigeth_mod);
     c_api_mod.addImport("transport", transport_mod);
+    c_api_mod.addImport("signers", signers_mod);
 
     // Static library
     const static_lib = b.addLibrary(.{
@@ -93,6 +105,7 @@ pub fn build(b: *std.Build) void {
     });
     dynamic_lib.root_module.addImport("zigeth", zigeth_mod);
     dynamic_lib.root_module.addImport("transport", transport_mod);
+    dynamic_lib.root_module.addImport("signers", signers_mod);
     dynamic_lib.linkLibrary(zigeth_artifact);
     b.installArtifact(dynamic_lib);
 
@@ -108,6 +121,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "zigeth", .module = zigeth_mod },
+                .{ .name = "signers", .module = signers_mod },
             },
         }),
     });
@@ -130,6 +144,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "core", .module = core_mod },
                 .{ .name = "transport", .module = transport_mod },
                 .{ .name = "validators", .module = validators_mod },
+                .{ .name = "signers", .module = signers_mod },
             },
         }),
     });
@@ -152,6 +167,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "core", .module = core_mod },
                 .{ .name = "transport", .module = transport_mod },
                 .{ .name = "validators", .module = validators_mod },
+                .{ .name = "signers", .module = signers_mod },
             },
         }),
     });
@@ -172,6 +188,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "zigeth", .module = zigeth_mod },
             .{ .name = "transport", .module = transport_mod },
+            .{ .name = "signers", .module = signers_mod },
         },
     });
 

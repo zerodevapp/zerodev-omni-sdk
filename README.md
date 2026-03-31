@@ -15,15 +15,13 @@ func main() {
     ctx, _ := aa.NewContext(projectID, "", "", 11155111, aa.GasZeroDev, aa.PaymasterZeroDev)
     defer ctx.Close()
 
-    account, _ := ctx.NewAccount(privateKey, aa.KernelV3_3, 0)
+    signer, _ := aa.LocalSigner(privateKey)       // or aa.RpcSigner(url, addr)
+    defer signer.Close()
+
+    account, _ := ctx.NewAccount(signer, aa.KernelV3_3, 0)
     defer account.Close()
 
-    hash, _ := account.SendUserOp([]aa.Call{{
-        Target:   recipientAddr,
-        Value:    [32]byte{},
-        Calldata: []byte{},
-    }})
-
+    hash, _ := account.SendUserOp([]aa.Call{{Target: recipientAddr}})
     receipt, _ := account.WaitForUserOperationReceipt(hash, 0, 0)
     fmt.Println("success:", receipt.Success)
 }
@@ -32,21 +30,15 @@ func main() {
 ## Quick Start (Rust)
 
 ```rust
-use zerodev_aa::{Context, KernelVersion, GasMiddleware, PaymasterMiddleware, Call};
+use zerodev_aa::{Context, Signer, KernelVersion, GasMiddleware, PaymasterMiddleware, Call};
 
 let ctx = Context::new(project_id, "", "", 11155111, GasMiddleware::ZeroDev, PaymasterMiddleware::ZeroDev)?;
-let account = ctx.new_account(&private_key, KernelVersion::V3_3, 0)?;
+let signer = Signer::local(&private_key)?;         // or Signer::rpc(url, &addr)?
+let account = ctx.new_account(&signer, KernelVersion::V3_3, 0)?;
 
-let addr = account.get_address()?;
-let hash = account.send_user_op(&[Call {
-    target: addr,
-    value: [0u8; 32],
-    calldata: vec![],
-}])?;
-
+let hash = account.send_user_op(&[Call { target: addr, value: [0u8; 32], calldata: vec![] }])?;
 let receipt = account.wait_for_user_operation_receipt(&hash, 0, 0)?;
-println!("success: {}", receipt.success);
-// Context and Account are automatically cleaned up on drop.
+// Signer, Account, Context are automatically cleaned up on drop.
 ```
 
 ## Quick Start (Swift)
@@ -55,16 +47,12 @@ println!("success: {}", receipt.success);
 import ZeroDevAA
 
 let ctx = try Context(projectID: projectID, chainID: 11155111, gasMiddleware: .zeroDev)
-let account = try ctx.newAccount(privateKey: privateKey, version: .v3_3)
+let signer = try Signer.local(privateKey: pk)       // or Signer.rpc(url: url, address: addr)
+let account = try ctx.newAccount(signer: signer, version: .v3_3)
 
-let addr = try account.getAddress()
-let hash = try account.sendUserOp(calls: [
-    Call(target: addr)
-])
-
+let hash = try account.sendUserOp(calls: [Call(target: addr)])
 let receipt = try account.waitForUserOperationReceipt(useropHash: hash)
-print("success: \(receipt.success)")
-// Context and Account are automatically cleaned up via deinit.
+// Signer, Account, Context are automatically cleaned up via deinit.
 ```
 
 ## Quick Start (Kotlin)
@@ -73,17 +61,14 @@ print("success: \(receipt.success)")
 import dev.zerodev.aa.*
 
 Context.create(projectId, chainId = 11155111).use { ctx ->
-    ctx.newAccount(privateKey, KernelVersion.V3_3).use { account ->
-        val addr = account.getAddress()
-        val hash = account.sendUserOp(listOf(
-            Call(target = addr)
-        ))
-
-        val receipt = account.waitForUserOperationReceipt(hash)
-        println("success: ${receipt.success}")
+    Signer.local(privateKey).use { signer ->          // or Signer.rpc(url, addr)
+        ctx.newAccount(signer, KernelVersion.V3_3).use { account ->
+            val hash = account.sendUserOp(listOf(Call(target = addr)))
+            val receipt = account.waitForUserOperationReceipt(hash)
+            println("success: ${receipt.success}")
+        }
     }
 }
-// .use {} blocks ensure deterministic cleanup.
 ```
 
 ## Quick Start (C)
@@ -96,16 +81,19 @@ aa_context_create(project_id, "", "", 11155111, &ctx);
 aa_context_set_gas_middleware(ctx, aa_gas_zerodev);
 aa_context_set_paymaster_middleware(ctx, aa_paymaster_zerodev);
 
+aa_signer_t *signer;
+aa_signer_local(private_key, &signer);              // or aa_signer_rpc(url, addr, &signer)
+
 aa_account_t *account;
-aa_account_create(ctx, private_key, AA_KERNEL_V3_3, 0, &account);
+aa_account_create(ctx, signer, AA_KERNEL_V3_3, 0, &account);
 
 aa_call_t call = { .target = recipient, .value_be = {0} };
 uint8_t hash[32];
 aa_send_userop(account, &call, 1, hash);
 
-char *json; size_t json_len;
-aa_wait_for_user_operation_receipt(account, hash, 0, 0, &json, &json_len);
-aa_free(json);
+aa_account_destroy(account);
+aa_signer_destroy(signer);
+aa_context_destroy(ctx);
 ```
 
 ## Architecture
@@ -114,6 +102,7 @@ aa_free(json);
 src/
 ├── core/           # AA primitives (kernel, userop, create2, bundler, paymaster, entrypoint)
 ├── transport/      # HTTP + JSON-RPC client
+├── signers/        # Signer interface (local private key, JSON-RPC for Privy/custodial)
 ├── validators/     # Validator plugin system (ECDSA, extensible)
 └── c_api.zig       # C FFI layer with middleware pattern
 

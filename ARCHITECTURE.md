@@ -65,12 +65,16 @@ src/
 │   ├── paymaster.zig       # pm_getPaymasterStubData / pm_getPaymasterData
 │   ├── entrypoint.zig      # EntryPoint v0.7 nonce queries (eth_call)
 │   └── create2.zig         # CREATE2 counterfactual address derivation
+├── signers/
+│   ├── signer.zig          # Signer vtable interface (signHash, signMessage, signTypedDataHash)
+│   ├── local.zig           # Local private key signer (secp256k1 via zigeth)
+│   └── json_rpc.zig        # JSON-RPC signer (Privy, custodial wallets)
 ├── transport/
 │   ├── http.zig            # HTTP POST with gzip/chunked support
 │   └── json_rpc.zig        # JSON-RPC client (request/response/error)
 └── validators/
     ├── Validator.zig        # Validator vtable interface
-    └── ecdsa.zig            # ECDSA signer (secp256k1 via zigeth)
+    └── ecdsa.zig            # ECDSA validator (wraps any Signer)
 
 include/
 └── aa.h                    # C header — the FFI contract
@@ -84,12 +88,14 @@ bindings/
 
 ## Handle Hierarchy
 
-Three opaque handles with strict ownership:
+Four opaque handles:
 
 ```
+aa_signer_t                      Signing key (local private key or JSON-RPC endpoint)
+
 aa_context_t                     Holds RPC URLs, chain ID, middleware fn ptrs
     │
-    ├── aa_account_t             Holds private key, validator, kernel version
+    ├── aa_account_t             Borrows signer + context, holds validator, kernel version
     │       │
     │       └── aa_userop_t      Holds a single in-flight UserOperation
     │
@@ -97,6 +103,8 @@ aa_context_t                     Holds RPC URLs, chain ID, middleware fn ptrs
             ├── aa_gas_price_fn       → gas pricing callback
             └── aa_paymaster_fn       → paymaster sponsorship callback
 ```
+
+Signer is independent — created before the account, can be shared across accounts, destroyed after accounts.
 
 Each binding mirrors this with strong references to prevent use-after-free:
 - **Go**: `defer ctx.Close()` / `defer account.Close()`

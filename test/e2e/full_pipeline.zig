@@ -27,6 +27,7 @@ const json_rpc = @import("transport");
 const Client = json_rpc.Client;
 
 const EcdsaValidator = @import("validators").ecdsa.EcdsaValidator;
+const LocalSigner = @import("signers").local.LocalSigner;
 
 // ---- Helpers ----
 
@@ -188,7 +189,10 @@ test "e2e: build, hash, and sign UserOp" {
     const chain_id = try std.fmt.parseInt(u64, chain_id_str, 10);
 
     const pk_bytes = try hexToBytes32(pk_hex);
-    var ecdsa = try EcdsaValidator.init(allocator, pk_bytes);
+    const local = try allocator.create(LocalSigner);
+    defer allocator.destroy(local);
+    local.* = try LocalSigner.init(allocator, pk_bytes);
+    var ecdsa = EcdsaValidator.init(local.signer());
 
     const sender = try create2.getKernelAddress(ecdsa.owner_address, 0, .v3_3);
 
@@ -291,7 +295,10 @@ test "e2e: estimate gas for UserOp via bundler" {
     if (pk_hex.len == 0) return;
 
     const pk_bytes = try hexToBytes32(pk_hex);
-    var ecdsa = try EcdsaValidator.init(allocator, pk_bytes);
+    const local = try allocator.create(LocalSigner);
+    defer allocator.destroy(local);
+    local.* = try LocalSigner.init(allocator, pk_bytes);
+    var ecdsa = EcdsaValidator.init(local.signer());
     const sender = try create2.getKernelAddress(ecdsa.owner_address, 0, .v3_3);
 
     // Fund the smart account via anvil_setBalance
@@ -371,7 +378,10 @@ test "e2e: full pipeline — build, estimate, sign, send UserOp" {
     const chain_id = try std.fmt.parseInt(u64, chain_id_str, 10);
 
     const pk_bytes = try hexToBytes32(pk_hex);
-    var ecdsa = try EcdsaValidator.init(allocator, pk_bytes);
+    const local = try allocator.create(LocalSigner);
+    defer allocator.destroy(local);
+    local.* = try LocalSigner.init(allocator, pk_bytes);
+    var ecdsa = EcdsaValidator.init(local.signer());
     const sender = try create2.getKernelAddress(ecdsa.owner_address, 0, .v3_3);
 
     var rpc = try Client.init(allocator, rpc_url);
@@ -498,7 +508,10 @@ test "e2e: second UserOp (no init_code) on deployed account" {
     const chain_id = try std.fmt.parseInt(u64, chain_id_str, 10);
 
     const pk_bytes = try hexToBytes32(pk_hex);
-    var ecdsa = try EcdsaValidator.init(allocator, pk_bytes);
+    const local = try allocator.create(LocalSigner);
+    defer allocator.destroy(local);
+    local.* = try LocalSigner.init(allocator, pk_bytes);
+    var ecdsa = EcdsaValidator.init(local.signer());
     const sender = try create2.getKernelAddress(ecdsa.owner_address, 0, .v3_3);
 
     var rpc = try Client.init(allocator, rpc_url);

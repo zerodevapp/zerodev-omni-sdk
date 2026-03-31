@@ -24,7 +24,8 @@ enum class AaStatus(val code: Int) {
     NO_GAS_MIDDLEWARE(20),
     NO_PAYMASTER_MIDDLEWARE(21),
     RECEIPT_TIMEOUT(22),
-    RECEIPT_FAILED(23);
+    RECEIPT_FAILED(23),
+    INVALID_SIGNER(24);
 
     companion object {
         fun fromCode(code: Int): AaStatus? = entries.find { it.code == code }

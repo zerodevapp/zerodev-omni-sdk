@@ -27,6 +27,7 @@ const json_rpc = @import("transport");
 const Client = json_rpc.Client;
 
 const EcdsaValidator = @import("validators").ecdsa.EcdsaValidator;
+const LocalSigner = @import("signers").local.LocalSigner;
 
 fn fmtAddr(bytes: []const u8) [40]u8 {
     const hex_chars = "0123456789abcdef";
@@ -114,7 +115,10 @@ test "live: derive Kernel address on Sepolia" {
     if (pk_hex.len == 0) return;
 
     const pk_bytes = try hexToBytes32(pk_hex);
-    const ecdsa = try EcdsaValidator.init(allocator, pk_bytes);
+    const local = try allocator.create(LocalSigner);
+    defer allocator.destroy(local);
+    local.* = try LocalSigner.init(allocator, pk_bytes);
+    const ecdsa = EcdsaValidator.init(local.signer());
 
     const addr = try create2.getKernelAddress(ecdsa.owner_address, 0, .v3_3);
     const addr_hex = fmtAddr(&addr.bytes);
@@ -144,7 +148,10 @@ test "live: sponsored UserOp via ZeroDev paymaster" {
     defer rpc.deinit();
 
     const pk_bytes = try hexToBytes32(pk_hex);
-    var ecdsa = try EcdsaValidator.init(allocator, pk_bytes);
+    const local = try allocator.create(LocalSigner);
+    defer allocator.destroy(local);
+    local.* = try LocalSigner.init(allocator, pk_bytes);
+    var ecdsa = EcdsaValidator.init(local.signer());
     const sender = try create2.getKernelAddress(ecdsa.owner_address, 0, .v3_3);
     const sender_hex = fmtAddr(&sender.bytes);
     std.log.info("Step 1: Sender address: 0x{s}", .{&sender_hex});

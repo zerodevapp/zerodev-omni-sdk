@@ -17,6 +17,11 @@ pub(crate) struct aa_account_t {
 }
 
 #[repr(C)]
+pub(crate) struct aa_signer_t {
+    _opaque: [u8; 0],
+}
+
+#[repr(C)]
 pub(crate) struct aa_userop_t {
     _opaque: [u8; 0],
 }
@@ -97,10 +102,24 @@ extern "C" {
         out: *mut aa_paymaster_result_t,
     ) -> aa_status;
 
+    // Signer
+    pub(crate) fn aa_signer_local(
+        private_key: *const u8,
+        out: *mut *mut aa_signer_t,
+    ) -> aa_status;
+
+    pub(crate) fn aa_signer_rpc(
+        rpc_url: *const c_char,
+        address: *const u8,
+        out: *mut *mut aa_signer_t,
+    ) -> aa_status;
+
+    pub(crate) fn aa_signer_destroy(signer: *mut aa_signer_t);
+
     // Account
     pub(crate) fn aa_account_create(
         ctx: *mut aa_context_t,
-        private_key: *const u8,
+        signer: *mut aa_signer_t,
         version: i32,
         index: u32,
         out: *mut *mut aa_account_t,

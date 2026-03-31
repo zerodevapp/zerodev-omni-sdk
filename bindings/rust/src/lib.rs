@@ -9,6 +9,46 @@ use std::ptr;
 pub use error::{AaError, Result};
 pub use types::{Address, Call, GasMiddleware, Hash, KernelVersion, PaymasterMiddleware, UserOperationReceipt};
 
+/// A signer handle (local private key or JSON-RPC endpoint).
+///
+/// Owns the underlying C handle; automatically destroyed on drop.
+pub struct Signer {
+    ptr: *mut ffi::aa_signer_t,
+}
+
+unsafe impl Send for Signer {}
+
+impl Signer {
+    /// Create a signer from a 32-byte private key.
+    pub fn local(private_key: &[u8; 32]) -> Result<Self> {
+        let mut s: *mut ffi::aa_signer_t = ptr::null_mut();
+        unsafe {
+            error::check(ffi::aa_signer_local(private_key.as_ptr(), &mut s))?;
+        }
+        Ok(Self { ptr: s })
+    }
+
+    /// Create a signer backed by a JSON-RPC endpoint.
+    pub fn rpc(rpc_url: &str, address: &[u8; 20]) -> Result<Self> {
+        let c_url = CString::new(rpc_url).map_err(|_| AaError::InvalidUrl)?;
+        let mut s: *mut ffi::aa_signer_t = ptr::null_mut();
+        unsafe {
+            error::check(ffi::aa_signer_rpc(c_url.as_ptr(), address.as_ptr(), &mut s))?;
+        }
+        Ok(Self { ptr: s })
+    }
+}
+
+impl Drop for Signer {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            unsafe {
+                ffi::aa_signer_destroy(self.ptr);
+            }
+        }
+    }
+}
+
 /// SDK context holding RPC URLs, chain config, and middleware.
 ///
 /// Owns the underlying C handle; automatically destroyed on drop.
@@ -73,7 +113,7 @@ impl Context {
     /// Create a new Kernel account bound to this context.
     pub fn new_account(
         &self,
-        private_key: &[u8; 32],
+        signer: &Signer,
         version: KernelVersion,
         index: u32,
     ) -> Result<Account<'_>> {
@@ -81,7 +121,7 @@ impl Context {
         unsafe {
             error::check(ffi::aa_account_create(
                 self.ptr,
-                private_key.as_ptr(),
+                signer.ptr,
                 version.to_c(),
                 index,
                 &mut acc,
