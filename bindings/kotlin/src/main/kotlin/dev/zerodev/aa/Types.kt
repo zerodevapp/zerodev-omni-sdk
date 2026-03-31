@@ -94,6 +94,13 @@ data class UserOperationReceipt(
     }
 }
 
+interface SignerImpl {
+    fun signHash(hash: ByteArray): ByteArray
+    fun signMessage(msg: ByteArray): ByteArray
+    fun signTypedDataHash(hash: ByteArray): ByteArray
+    fun getAddress(): ByteArray
+}
+
 data class Call(
     val target: Address,
     val value: ByteArray = ByteArray(32),

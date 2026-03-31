@@ -3,17 +3,64 @@ pub mod error;
 pub mod types;
 
 use std::ffi::CString;
-use std::os::raw::c_char;
+use std::os::raw::{c_char, c_void};
 use std::ptr;
 
 pub use error::{AaError, Result};
 pub use types::{Address, Call, GasMiddleware, Hash, KernelVersion, PaymasterMiddleware, UserOperationReceipt};
+
+/// Trait for implementing custom signers (Privy, HSM, MPC, etc.).
+pub trait SignerImpl: Send + 'static {
+    fn sign_hash(&self, hash: &[u8; 32]) -> std::result::Result<[u8; 65], Box<dyn std::error::Error>>;
+    fn sign_message(&self, msg: &[u8]) -> std::result::Result<[u8; 65], Box<dyn std::error::Error>>;
+    fn sign_typed_data_hash(&self, hash: &[u8; 32]) -> std::result::Result<[u8; 65], Box<dyn std::error::Error>>;
+    fn get_address(&self) -> [u8; 20];
+}
+
+unsafe extern "C" fn custom_sign_hash(ctx: *mut c_void, hash: *const [u8; 32], out: *mut [u8; 65]) -> i32 {
+    let imp = &*(ctx as *const Box<dyn SignerImpl>);
+    match imp.sign_hash(&*hash) {
+        Ok(sig) => { *out = sig; 0 }
+        Err(_) => 1,
+    }
+}
+
+unsafe extern "C" fn custom_sign_message(ctx: *mut c_void, msg: *const u8, msg_len: usize, out: *mut [u8; 65]) -> i32 {
+    let imp = &*(ctx as *const Box<dyn SignerImpl>);
+    let slice = std::slice::from_raw_parts(msg, msg_len);
+    match imp.sign_message(slice) {
+        Ok(sig) => { *out = sig; 0 }
+        Err(_) => 1,
+    }
+}
+
+unsafe extern "C" fn custom_sign_typed_data_hash(ctx: *mut c_void, hash: *const [u8; 32], out: *mut [u8; 65]) -> i32 {
+    let imp = &*(ctx as *const Box<dyn SignerImpl>);
+    match imp.sign_typed_data_hash(&*hash) {
+        Ok(sig) => { *out = sig; 0 }
+        Err(_) => 1,
+    }
+}
+
+unsafe extern "C" fn custom_get_address(ctx: *mut c_void, out: *mut [u8; 20]) -> i32 {
+    let imp = &*(ctx as *const Box<dyn SignerImpl>);
+    *out = imp.get_address();
+    0
+}
+
+static CUSTOM_VTABLE: ffi::aa_signer_vtable = ffi::aa_signer_vtable {
+    sign_hash: custom_sign_hash,
+    sign_message: custom_sign_message,
+    sign_typed_data_hash: custom_sign_typed_data_hash,
+    get_address: custom_get_address,
+};
 
 /// A signer handle (local private key or JSON-RPC endpoint).
 ///
 /// Owns the underlying C handle; automatically destroyed on drop.
 pub struct Signer {
     ptr: *mut ffi::aa_signer_t,
+    custom_impl: Option<*mut c_void>,
 }
 
 unsafe impl Send for Signer {}
@@ -25,7 +72,7 @@ impl Signer {
         unsafe {
             error::check(ffi::aa_signer_local(private_key.as_ptr(), &mut s))?;
         }
-        Ok(Self { ptr: s })
+        Ok(Self { ptr: s, custom_impl: None })
     }
 
     /// Create a signer backed by a JSON-RPC endpoint.
@@ -35,7 +82,23 @@ impl Signer {
         unsafe {
             error::check(ffi::aa_signer_rpc(c_url.as_ptr(), address.as_ptr(), &mut s))?;
         }
-        Ok(Self { ptr: s })
+        Ok(Self { ptr: s, custom_impl: None })
+    }
+
+    /// Create a signer from a custom [`SignerImpl`] implementation.
+    pub fn custom<T: SignerImpl>(impl_: T) -> Result<Self> {
+        let boxed: Box<Box<dyn SignerImpl>> = Box::new(Box::new(impl_));
+        let raw = Box::into_raw(boxed) as *mut c_void;
+
+        let mut s: *mut ffi::aa_signer_t = ptr::null_mut();
+        unsafe {
+            let status = ffi::aa_signer_custom(&CUSTOM_VTABLE, raw, &mut s);
+            if status != ffi::AA_OK {
+                let _ = Box::from_raw(raw as *mut Box<dyn SignerImpl>);
+                return Err(error::from_status(status));
+            }
+        }
+        Ok(Self { ptr: s, custom_impl: Some(raw) })
     }
 }
 
@@ -44,6 +107,11 @@ impl Drop for Signer {
         if !self.ptr.is_null() {
             unsafe {
                 ffi::aa_signer_destroy(self.ptr);
+            }
+        }
+        if let Some(raw) = self.custom_impl.take() {
+            unsafe {
+                let _ = Box::from_raw(raw as *mut Box<dyn SignerImpl>);
             }
         }
     }

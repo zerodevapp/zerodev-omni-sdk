@@ -65,6 +65,14 @@ pub(crate) type aa_paymaster_fn = Option<
     ) -> aa_status,
 >;
 
+#[repr(C)]
+pub(crate) struct aa_signer_vtable {
+    pub sign_hash: unsafe extern "C" fn(*mut c_void, *const [u8; 32], *mut [u8; 65]) -> i32,
+    pub sign_message: unsafe extern "C" fn(*mut c_void, *const u8, usize, *mut [u8; 65]) -> i32,
+    pub sign_typed_data_hash: unsafe extern "C" fn(*mut c_void, *const [u8; 32], *mut [u8; 65]) -> i32,
+    pub get_address: unsafe extern "C" fn(*mut c_void, *mut [u8; 20]) -> i32,
+}
+
 extern "C" {
     pub(crate) fn aa_context_create(
         project_id: *const c_char,
@@ -111,6 +119,12 @@ extern "C" {
     pub(crate) fn aa_signer_rpc(
         rpc_url: *const c_char,
         address: *const u8,
+        out: *mut *mut aa_signer_t,
+    ) -> aa_status;
+
+    pub(crate) fn aa_signer_custom(
+        vtable: *const aa_signer_vtable,
+        ctx: *mut c_void,
         out: *mut *mut aa_signer_t,
     ) -> aa_status;
 

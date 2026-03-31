@@ -147,6 +147,18 @@ aa_status aa_signer_rpc(const char *rpc_url,
                          const uint8_t address[20],
                          aa_signer_t **out);
 
+/** Create a custom signer from a vtable of function pointers. */
+typedef struct {
+    int (*sign_hash)(void *ctx, const uint8_t hash[32], uint8_t sig_out[65]);
+    int (*sign_message)(void *ctx, const uint8_t *msg, size_t msg_len, uint8_t sig_out[65]);
+    int (*sign_typed_data_hash)(void *ctx, const uint8_t hash[32], uint8_t sig_out[65]);
+    int (*get_address)(void *ctx, uint8_t addr_out[20]);
+} aa_signer_vtable;
+
+aa_status aa_signer_custom(const aa_signer_vtable *vtable,
+                            void *ctx,
+                            aa_signer_t **out);
+
 /** Destroy a signer handle. */
 void aa_signer_destroy(aa_signer_t *signer);
 
