@@ -142,6 +142,9 @@ aa_status aa_paymaster_zerodev(aa_context_t *ctx,
 aa_status aa_signer_local(const uint8_t private_key[32],
                            aa_signer_t **out);
 
+/** Create a local signer with a randomly generated private key. */
+aa_status aa_signer_generate(aa_signer_t **out);
+
 /** Create a JSON-RPC signer (Privy, custodial wallets, etc.). */
 aa_status aa_signer_rpc(const char *rpc_url,
                          const uint8_t address[20],

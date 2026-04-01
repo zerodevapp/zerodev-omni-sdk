@@ -40,6 +40,7 @@ internal interface NativeLib : Library {
     fun aa_context_set_paymaster_middleware(ctx: Pointer, middleware: Pointer?): Int
     fun aa_context_destroy(ctx: Pointer): Int
 
+    fun aa_signer_generate(out: PointerByReference): Int
     fun aa_signer_local(private_key: ByteArray, out: PointerByReference): Int
     fun aa_signer_rpc(rpc_url: String, address: ByteArray, out: PointerByReference): Int
     fun aa_signer_custom(vtable: Pointer, ctx: Pointer?, out: PointerByReference): Int

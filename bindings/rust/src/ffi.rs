@@ -116,6 +116,10 @@ extern "C" {
         out: *mut *mut aa_signer_t,
     ) -> aa_status;
 
+    pub(crate) fn aa_signer_generate(
+        out: *mut *mut aa_signer_t,
+    ) -> aa_status;
+
     pub(crate) fn aa_signer_rpc(
         rpc_url: *const c_char,
         address: *const u8,

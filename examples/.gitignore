@@ -1,0 +1,8 @@
+# Build artifacts
+.build/
+.gradle/
+build/
+target/
+Cargo.lock
+*.o
+*.class

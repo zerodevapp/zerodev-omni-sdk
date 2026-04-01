@@ -75,6 +75,15 @@ impl Signer {
         Ok(Self { ptr: s, custom_impl: None })
     }
 
+    /// Create a signer with a randomly generated private key.
+    pub fn generate() -> Result<Self> {
+        let mut s: *mut ffi::aa_signer_t = ptr::null_mut();
+        unsafe {
+            error::check(ffi::aa_signer_generate(&mut s))?;
+        }
+        Ok(Self { ptr: s, custom_impl: None })
+    }
+
     /// Create a signer backed by a JSON-RPC endpoint.
     pub fn rpc(rpc_url: &str, address: &[u8; 20]) -> Result<Self> {
         let c_url = CString::new(rpc_url).map_err(|_| AaError::InvalidUrl)?;

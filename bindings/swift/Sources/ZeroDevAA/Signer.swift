@@ -82,6 +82,15 @@ public final class Signer: @unchecked Sendable {
         return Signer(ptr: p)
     }
 
+    /// Create a signer with a randomly generated private key.
+    public static func generate() throws -> Signer {
+        var out: OpaquePointer?
+        let status = aa_signer_generate(&out)
+        try checkResult(status)
+        guard let p = out else { throw AAError.nullOutPtr }
+        return Signer(ptr: p)
+    }
+
     /// Create a JSON-RPC signer (Privy, custodial wallets, etc.).
     public static func rpc(url: String, address: [UInt8]) throws -> Signer {
         precondition(address.count == 20, "address must be 20 bytes")
