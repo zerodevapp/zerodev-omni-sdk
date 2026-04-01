@@ -1,3 +1,27 @@
+// Privy Embedded Wallet — Custom Signer Example (Swift)
+//
+// This CLI example uses Privy's REST API directly for server-side signing.
+// In a real iOS/macOS app, you'd use the Privy Swift SDK instead:
+//
+//   import PrivySDK  // https://github.com/privy-io/privy-ios
+//
+//   class PrivySigner: SignerProtocol {
+//       let wallet: EmbeddedEthereumWallet
+//
+//       func signMessage(_ msg: [UInt8]) throws -> [UInt8] {
+//           let data = EthereumRpcRequest(
+//               method: "personal_sign",
+//               params: [bytesToHex(msg), wallet.address]
+//           )
+//           let sig = try await wallet.provider.request(data)
+//           return hexToBytes(sig)!
+//       }
+//       // ... signHash, signTypedDataHash, getAddress
+//   }
+//
+//   let signer = try Signer.custom(PrivySigner(wallet: privy.user!.embeddedEthereumWallets.first!))
+//   let account = try ctx.newAccount(signer: signer, version: .v3_3)
+
 import Foundation
 import ZeroDevAA
 
