@@ -12,12 +12,15 @@ extern int goSignMessage(void *ctx, void *msg, size_t msg_len, void *sig_out);
 extern int goSignTypedDataHash(void *ctx, void *hash, void *sig_out);
 extern int goGetAddress(void *ctx, void *addr_out);
 
-static aa_signer_vtable go_signer_vtable = {
-    (int (*)(void*, const uint8_t[32], uint8_t[65]))goSignHash,
-    (int (*)(void*, const uint8_t*, size_t, uint8_t[65]))goSignMessage,
-    (int (*)(void*, const uint8_t[32], uint8_t[65]))goSignTypedDataHash,
-    (int (*)(void*, uint8_t[20]))goGetAddress,
-};
+static inline aa_signer_vtable* get_go_signer_vtable() {
+    static aa_signer_vtable vt = {
+        (int (*)(void*, const uint8_t[32], uint8_t[65]))goSignHash,
+        (int (*)(void*, const uint8_t*, size_t, uint8_t[65]))goSignMessage,
+        (int (*)(void*, const uint8_t[32], uint8_t[65]))goSignTypedDataHash,
+        (int (*)(void*, uint8_t[20]))goGetAddress,
+    };
+    return &vt;
+}
 */
 import "C"
 import (
@@ -72,6 +75,16 @@ func LocalSigner(privateKey [32]byte) (*Signer, error) {
 	status := C.aa_signer_local(cKey, &s)
 	if status != C.AA_OK {
 		return nil, fmt.Errorf("aa_signer_local failed: %s (code %d)", C.GoString(C.aa_get_last_error()), int(status))
+	}
+	return &Signer{ptr: s}, nil
+}
+
+// GenerateSigner creates a signer with a randomly generated private key.
+func GenerateSigner() (*Signer, error) {
+	var s *C.aa_signer_t
+	status := C.aa_signer_generate(&s)
+	if status != C.AA_OK {
+		return nil, fmt.Errorf("aa_signer_generate failed: %s (code %d)", C.GoString(C.aa_get_last_error()), int(status))
 	}
 	return &Signer{ptr: s}, nil
 }
@@ -188,7 +201,7 @@ func CustomSigner(fns SignerFuncs) (*Signer, error) {
 	customSignerRegistry.Store(id, &fns)
 
 	var s *C.aa_signer_t
-	status := C.aa_signer_custom(&C.go_signer_vtable, unsafe.Pointer(uintptr(id)), &s)
+	status := C.aa_signer_custom(C.get_go_signer_vtable(), unsafe.Pointer(uintptr(id)), &s)
 	if status != C.AA_OK {
 		customSignerRegistry.Delete(id)
 		return nil, fmt.Errorf("aa_signer_custom failed: %s (code %d)", C.GoString(C.aa_get_last_error()), int(status))

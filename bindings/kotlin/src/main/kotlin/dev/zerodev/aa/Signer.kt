@@ -33,6 +33,12 @@ class Signer private constructor(internal val ptr: Pointer) : AutoCloseable {
             return Signer(ptrRef.value)
         }
 
+        fun generate(): Signer {
+            val ptrRef = PointerByReference()
+            checkStatus(NativeLib.INSTANCE.aa_signer_generate(ptrRef))
+            return Signer(ptrRef.value)
+        }
+
         fun rpc(rpcUrl: String, address: ByteArray): Signer {
             require(address.size == 20) { "address must be 20 bytes" }
             val ptrRef = PointerByReference()

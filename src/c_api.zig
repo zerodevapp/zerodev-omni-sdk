@@ -420,6 +420,26 @@ pub export fn aa_signer_local(
     return .ok;
 }
 
+pub export fn aa_signer_generate(
+    out: ?*?*SignerImpl,
+) callconv(.c) Status {
+    if (out == null) return .null_out_ptr;
+
+    const allocator = defaultAllocator();
+    var pk: [32]u8 = undefined;
+    std.crypto.random.bytes(&pk);
+
+    const local = LocalSigner.init(allocator, pk) catch {
+        setLastError("failed to initialize signer from generated key", .{});
+        return .invalid_private_key;
+    };
+
+    const impl = allocator.create(SignerImpl) catch return .out_of_memory;
+    impl.* = .{ .allocator = allocator, .kind = .{ .local = local } };
+    out.?.* = impl;
+    return .ok;
+}
+
 pub export fn aa_signer_rpc(
     rpc_url: ?[*:0]const u8,
     address: ?[*]const u8,
