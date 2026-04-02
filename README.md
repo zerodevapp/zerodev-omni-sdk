@@ -96,6 +96,80 @@ aa_signer_destroy(signer);
 aa_context_destroy(ctx);
 ```
 
+## Getting Started
+
+### Prerequisites
+
+- [Zig 0.15+](https://ziglang.org/download/)
+- macOS: `brew install secp256k1`
+- A [ZeroDev](https://zerodev.app) project ID
+
+### 1. Clone and build
+
+```bash
+git clone https://github.com/zerodevapp/zerodev-omni-sdk.git
+cd zerodev-omni-sdk
+make build
+```
+
+### 2. Use in your project
+
+**Go:**
+```bash
+# In your project directory:
+go mod edit -require github.com/zerodevapp/zerodev-omni-sdk/bindings/go@v0.0.0
+go mod edit -replace github.com/zerodevapp/zerodev-omni-sdk/bindings/go=/path/to/zerodev-omni-sdk/bindings/go
+```
+
+**Rust:**
+```toml
+# Cargo.toml
+[dependencies]
+zerodev-aa = { path = "/path/to/zerodev-omni-sdk/bindings/rust" }
+```
+
+**Swift:**
+```swift
+// Package.swift
+.package(path: "/path/to/zerodev-omni-sdk/bindings/swift")
+// Build with: ZERODEV_SDK_ROOT=/path/to/zerodev-omni-sdk swift build
+```
+
+**Kotlin:**
+```kotlin
+// settings.gradle.kts
+includeBuild("/path/to/zerodev-omni-sdk/bindings/kotlin") {
+    dependencySubstitution {
+        substitute(module("dev.zerodev:zerodev-aa")).using(project(":"))
+    }
+}
+// Run with: -Djna.library.path=/path/to/zerodev-omni-sdk/zig-out/lib
+```
+
+### 3. Run an example
+
+```bash
+# Gasless transfer (generates a random key, sends sponsored UserOp on Sepolia):
+export ZERODEV_PROJECT_ID=your-project-id
+cd examples/gasless-transfer/go && make run
+
+# Privy signer (creates Privy wallet, signs via Privy SDK):
+export PRIVY_APP_ID=your-privy-app-id
+export PRIVY_APP_SECRET=your-privy-app-secret
+cd examples/privy-signer/go && make run
+```
+
+See [`examples/README.md`](examples/README.md) for all 8 examples (2 use cases × 4 languages).
+
+### Signer types
+
+| Constructor | Use case |
+|---|---|
+| `Signer.local(privateKey)` | Local private key (dev/testing) |
+| `Signer.generate()` | Random key (zero-config demos) |
+| `Signer.rpc(url, address)` | JSON-RPC endpoint (eth_sign compatible) |
+| `Signer.custom(impl)` | Any custom signing logic (Privy, HSM, MPC) |
+
 ## Architecture
 
 ```
