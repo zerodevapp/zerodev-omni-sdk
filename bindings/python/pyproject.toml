@@ -1,0 +1,9 @@
+[project]
+name = "zerodev-aa"
+version = "0.1.0"
+description = "ZeroDev ERC-4337 smart account SDK"
+requires-python = ">=3.10"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"

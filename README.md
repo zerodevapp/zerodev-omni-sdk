@@ -71,6 +71,19 @@ Context.create(projectId, chainId = 11155111).use { ctx ->
 }
 ```
 
+## Quick Start (Python)
+
+```python
+from zerodev_aa import Context, Signer, Call, KernelVersion
+
+with Context(project_id, chain_id=11155111) as ctx:
+    with Signer.local(private_key) as signer:           # or Signer.generate(), Signer.rpc(url, addr)
+        with ctx.new_account(signer, KernelVersion.V3_3) as account:
+            hash = account.send_user_op([Call(target=account.get_address().bytes)])
+            receipt = account.wait_for_receipt(hash)
+            print(f"success: {receipt['success']}")
+```
+
 ## Quick Start (C)
 
 ```c
@@ -146,6 +159,13 @@ includeBuild("/path/to/zerodev-omni-sdk/bindings/kotlin") {
 // Run with: -Djna.library.path=/path/to/zerodev-omni-sdk/zig-out/lib
 ```
 
+**Python:**
+```bash
+PYTHONPATH=/path/to/zerodev-omni-sdk/bindings/python
+ZERODEV_SDK_ROOT=/path/to/zerodev-omni-sdk
+pip install -e /path/to/zerodev-omni-sdk/bindings/python  # or just set PYTHONPATH
+```
+
 ### 3. Run an example
 
 ```bash
@@ -183,10 +203,11 @@ src/
 include/aa.h        # C header
 
 bindings/
-├── go/             # Go wrapper
+├── go/             # Go wrapper (cgo)
 ├── rust/           # Rust wrapper (lifetime-safe, auto Drop)
 ├── swift/          # Swift wrapper (SPM, deinit cleanup)
-└── kotlin/         # Kotlin wrapper (JNA, AutoCloseable)
+├── kotlin/         # Kotlin wrapper (JNA, AutoCloseable)
+└── python/         # Python wrapper (ctypes, context managers)
 ```
 
 ## Middleware
@@ -231,3 +252,4 @@ E2E_PRIVATE_KEY=your-hex-private-key
 | Rust | Done |
 | Swift | Done |
 | Kotlin | Done |
+| Python | Done |
