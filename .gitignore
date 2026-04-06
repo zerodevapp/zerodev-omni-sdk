@@ -8,3 +8,6 @@ bindings/rust/target/
 bindings/swift/.build/
 bindings/kotlin/.gradle/
 bindings/kotlin/build/
+dist/
+/libc_api.a
+SWIFT_DX_FEEDBACK.md

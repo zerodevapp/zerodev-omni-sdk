@@ -3,6 +3,7 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const static_only = b.option(bool, "static-only", "Only build static library (skip dynamic — needed for iOS cross-compilation)") orelse false;
 
     // Get zigeth dependency
     const zigeth_dep = b.dependency("zigeth", .{
@@ -92,22 +93,24 @@ pub fn build(b: *std.Build) void {
     static_lib.linkLibrary(zigeth_artifact);
     b.installArtifact(static_lib);
 
-    // Dynamic library
-    const dynamic_lib = b.addLibrary(.{
-        .linkage = .dynamic,
-        .name = "zerodev_aa",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/c_api.zig"),
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-        }),
-    });
-    dynamic_lib.root_module.addImport("zigeth", zigeth_mod);
-    dynamic_lib.root_module.addImport("transport", transport_mod);
-    dynamic_lib.root_module.addImport("signers", signers_mod);
-    dynamic_lib.linkLibrary(zigeth_artifact);
-    b.installArtifact(dynamic_lib);
+    // Dynamic library (skip for iOS/cross-compilation with -Dstatic-only)
+    if (!static_only) {
+        const dynamic_lib = b.addLibrary(.{
+            .linkage = .dynamic,
+            .name = "zerodev_aa",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/c_api.zig"),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            }),
+        });
+        dynamic_lib.root_module.addImport("zigeth", zigeth_mod);
+        dynamic_lib.root_module.addImport("transport", transport_mod);
+        dynamic_lib.root_module.addImport("signers", signers_mod);
+        dynamic_lib.linkLibrary(zigeth_artifact);
+        b.installArtifact(dynamic_lib);
+    }
 
     // Install C header
     b.installFile("include/aa.h", "include/aa.h");

@@ -32,6 +32,10 @@ ifeq ($(shell uname),Darwin)
 	done
 endif
 
+# Build xcframework for Swift (macOS universal, no unsafeFlags)
+build-xcframework:
+	bash scripts/build-xcframework.sh
+
 # Build debug mode (for Zig development)
 build-debug:
 	$(ZIG_ENV) zig build
