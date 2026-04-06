@@ -1,10 +1,37 @@
 import CZeroDevAA
 
-/// Protocol for custom signer implementations.
+/// Protocol for custom signer implementations (Privy, WalletConnect, HSM, etc.).
+///
+/// ## Threading Contract
+/// These methods are called **synchronously from a background thread** by the
+/// Zig C FFI layer. Blocking is safe — you will NOT deadlock the main thread.
+///
+/// If your signer wraps an async API (e.g. Privy's `wallet.provider.request`),
+/// bridge with a semaphore:
+/// ```swift
+/// func signMessage(_ msg: [UInt8]) throws -> [UInt8] {
+///     let semaphore = DispatchSemaphore(value: 0)
+///     var result: [UInt8]?
+///     Task {
+///         result = try await myAsyncSign(msg)
+///         semaphore.signal()
+///     }
+///     semaphore.wait()
+///     return result!
+/// }
+/// ```
+///
+/// ## Hex Helpers
+/// Use `hexEncode(_:)` and `hexDecode(_:)` from this module for conversions.
+/// `Address(hex:)` and `Hash(hex:)` also accept 0x-prefixed strings.
 public protocol SignerProtocol: AnyObject {
+    /// Sign a raw 32-byte hash. Return 65-byte signature (r + s + v).
     func signHash(_ hash: [UInt8]) throws -> [UInt8]
+    /// Sign a message with EIP-191 personal_sign wrapping. Return 65-byte signature.
     func signMessage(_ msg: [UInt8]) throws -> [UInt8]
+    /// Sign an EIP-712 typed data hash. Return 65-byte signature.
     func signTypedDataHash(_ hash: [UInt8]) throws -> [UInt8]
+    /// Return the 20-byte signer address.
     func getAddress() -> [UInt8]
 }
 

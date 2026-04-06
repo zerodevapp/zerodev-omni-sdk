@@ -1,0 +1,172 @@
+name: Build xcframework
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch: # manual trigger
+
+jobs:
+  build:
+    runs-on: macos-14 # Apple Silicon runner
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: '0.15.2'
+
+      - name: Switch to CommandLineTools (for Zig libc linkage)
+        run: sudo xcode-select -s /Library/Developer/CommandLineTools
+
+      - name: Build macOS targets
+        run: |
+          for target in aarch64-macos x86_64-macos; do
+            echo "=== Building $target ==="
+            rm -rf zig-out
+            zig build -Doptimize=ReleaseFast -Dtarget=$target -Dstatic-only=true
+            mkdir -p dist/$target
+            cp zig-out/lib/libzerodev_aa.a dist/$target/
+            cp zig-out/lib/libsecp256k1.a dist/$target/
+
+            # Repack with libtool for Xcode compatibility
+            for lib in libzerodev_aa.a libsecp256k1.a; do
+              tmpdir=$(mktemp -d)
+              cd "$tmpdir"
+              ar x "$GITHUB_WORKSPACE/dist/$target/$lib"
+              chmod 644 *.o
+              libtool -static -o "$GITHUB_WORKSPACE/dist/$target/$lib" *.o
+              cd "$GITHUB_WORKSPACE"
+              rm -rf "$tmpdir"
+            done
+          done
+
+      - name: Switch to Xcode (for iOS SDK)
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: Build iOS targets
+        run: |
+          # iOS builds: Zig's build runner fails to link against .tbd stubs,
+          # but the static library is compiled. We extract it from the cache.
+          for target in aarch64-ios aarch64-ios-simulator; do
+            echo "=== Building $target ==="
+            rm -rf zig-out
+
+            # Run build — expect failure (build runner link error), but .a is in cache
+            zig build -Doptimize=ReleaseFast -Dtarget=$target -Dstatic-only=true 2>/dev/null || true
+
+            mkdir -p dist/$target
+
+            # Extract from zig cache — find the most recently built .a
+            for lib_name in libzerodev_aa.a libsecp256k1.a; do
+              latest=$(find .zig-cache -name "$lib_name" -newer build.zig 2>/dev/null | tail -1)
+              if [ -n "$latest" ]; then
+                cp "$latest" "dist/$target/"
+                echo "  Found $lib_name: $latest"
+              else
+                echo "  ERROR: Could not find $lib_name for $target"
+                # Fallback: try zig-out
+                [ -f "zig-out/lib/$lib_name" ] && cp "zig-out/lib/$lib_name" "dist/$target/"
+              fi
+            done
+
+            # Repack with libtool
+            for lib in libzerodev_aa.a libsecp256k1.a; do
+              if [ -f "dist/$target/$lib" ]; then
+                tmpdir=$(mktemp -d)
+                cd "$tmpdir"
+                ar x "$GITHUB_WORKSPACE/dist/$target/$lib"
+                chmod 644 *.o 2>/dev/null || true
+                libtool -static -o "$GITHUB_WORKSPACE/dist/$target/$lib" *.o 2>/dev/null
+                cd "$GITHUB_WORKSPACE"
+                rm -rf "$tmpdir"
+              fi
+            done
+          done
+
+      - name: Create merged static libs
+        run: |
+          for target_dir in dist/aarch64-macos dist/x86_64-macos dist/aarch64-ios dist/aarch64-ios-simulator; do
+            if [ -f "$target_dir/libzerodev_aa.a" ] && [ -f "$target_dir/libsecp256k1.a" ]; then
+              libtool -static -o "$target_dir/libZeroDevAA.a" \
+                "$target_dir/libzerodev_aa.a" "$target_dir/libsecp256k1.a" 2>/dev/null
+              echo "Merged: $target_dir/libZeroDevAA.a"
+            fi
+          done
+
+      - name: Create fat binaries
+        run: |
+          # macOS universal (arm64 + x86_64)
+          mkdir -p dist/macos-universal
+          lipo -create dist/aarch64-macos/libZeroDevAA.a dist/x86_64-macos/libZeroDevAA.a \
+               -output dist/macos-universal/libZeroDevAA.a
+          echo "macOS universal: $(lipo -info dist/macos-universal/libZeroDevAA.a)"
+
+      - name: Create xcframework
+        run: |
+          XCF_ARGS=(-create-xcframework)
+
+          # macOS
+          XCF_ARGS+=(-library dist/macos-universal/libZeroDevAA.a -headers include)
+
+          # iOS device
+          if [ -f dist/aarch64-ios/libZeroDevAA.a ]; then
+            XCF_ARGS+=(-library dist/aarch64-ios/libZeroDevAA.a -headers include)
+          fi
+
+          # iOS simulator
+          if [ -f dist/aarch64-ios-simulator/libZeroDevAA.a ]; then
+            XCF_ARGS+=(-library dist/aarch64-ios-simulator/libZeroDevAA.a -headers include)
+          fi
+
+          XCF_ARGS+=(-output dist/ZeroDevAA.xcframework)
+          xcodebuild "${XCF_ARGS[@]}"
+
+          # Add module map
+          for dir in dist/ZeroDevAA.xcframework/*/Headers; do
+            cat > "$dir/module.modulemap" << 'EOF'
+          module CZeroDevAA {
+              header "aa.h"
+              export *
+          }
+          EOF
+          done
+
+      - name: Package + checksum
+        run: |
+          cd dist
+          zip -r ZeroDevAA.xcframework.zip ZeroDevAA.xcframework
+          CHECKSUM=$(shasum -a 256 ZeroDevAA.xcframework.zip | cut -d' ' -f1)
+          echo "CHECKSUM=$CHECKSUM" >> $GITHUB_ENV
+          echo "SHA256: $CHECKSUM"
+
+      - name: Verify Swift build
+        run: |
+          sudo xcode-select -s /Library/Developer/CommandLineTools
+          cd bindings/swift
+          SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk swift build --target ZeroDevAA
+
+      - name: Upload xcframework artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZeroDevAA.xcframework
+          path: dist/ZeroDevAA.xcframework.zip
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/ZeroDevAA.xcframework.zip
+          body: |
+            ## ZeroDevAA xcframework
+
+            **SHA256:** `${{ env.CHECKSUM }}`
+
+            ### Swift Package Manager
+            ```swift
+            .binaryTarget(
+                name: "CZeroDevAA",
+                url: "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/ZeroDevAA.xcframework.zip",
+                checksum: "${{ env.CHECKSUM }}"
+            )
+            ```

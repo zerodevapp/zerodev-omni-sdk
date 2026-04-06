@@ -1,14 +1,5 @@
 // swift-tools-version: 6.0
 import PackageDescription
-import Foundation
-
-let repoRoot = ProcessInfo.processInfo.environment["ZERODEV_SDK_ROOT"]
-    ?? ({
-        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-        return url.appendingPathComponent("../..").standardized.path
-    })()
-let libDir = repoRoot + "/zig-out/lib"
-let includeDir = repoRoot + "/include"
 
 let package = Package(
     name: "ZeroDevAA",
@@ -17,24 +8,17 @@ let package = Package(
         .library(name: "ZeroDevAA", targets: ["ZeroDevAA"]),
     ],
     targets: [
-        .systemLibrary(
+        // Pre-built xcframework containing libzerodev_aa + libsecp256k1 + aa.h
+        // Build locally: make build-xcframework (from repo root)
+        // Release: replace path with url + checksum for remote SPM
+        .binaryTarget(
             name: "CZeroDevAA",
-            path: "Sources/CZeroDevAA"
+            path: "../../dist/ZeroDevAA.xcframework"
         ),
         .target(
             name: "ZeroDevAA",
             dependencies: ["CZeroDevAA"],
-            swiftSettings: [
-                .unsafeFlags(["-Xcc", "-I\(includeDir)"]),
-            ],
-            linkerSettings: [
-                .unsafeFlags([
-                    "\(libDir)/libzerodev_aa.a",
-                    "\(libDir)/libsecp256k1.a",
-                ]),
-                .linkedLibrary("c"),
-                .linkedFramework("Security", .when(platforms: [.macOS])),
-            ]
+            path: "Sources/ZeroDevAA"
         ),
         .executableTarget(
             name: "LiveTest",

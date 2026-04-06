@@ -10,17 +10,39 @@ SYSROOT ?= /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
 CGO_EXTRA_FLAGS = $(if $(SYSROOT),--sysroot=$(SYSROOT),)
 SWIFT_SDKROOT ?= $(SYSROOT)
 
+# Force Zig to use CommandLineTools SDK (not Xcode.app) for libc linkage
+ZIG_ENV = $(if $(wildcard /Library/Developer/CommandLineTools),DEVELOPER_DIR=/Library/Developer/CommandLineTools)
+
 # Build the Zig library (static + dynamic) — release mode for FFI consumers
 build:
-	zig build -Doptimize=ReleaseFast
+	$(ZIG_ENV) zig build -Doptimize=ReleaseFast
+ifeq ($(shell uname),Darwin)
+	@# Repack .a archives with Apple libtool for Xcode compatibility
+	@# (Zig's archiver produces members that aren't 8-byte aligned)
+	@for lib in libzerodev_aa.a libsecp256k1.a; do \
+		if [ -f zig-out/lib/$$lib ]; then \
+			tmpdir=$$(mktemp -d) && \
+			cd "$$tmpdir" && \
+			ar x "$(CURDIR)/zig-out/lib/$$lib" && \
+			chmod 644 *.o && \
+			libtool -static -o "$(CURDIR)/zig-out/lib/$$lib" *.o 2>/dev/null && \
+			cd "$(CURDIR)" && \
+			rm -r "$$tmpdir"; \
+		fi; \
+	done
+endif
+
+# Build xcframework for Swift (macOS universal, no unsafeFlags)
+build-xcframework:
+	bash scripts/build-xcframework.sh
 
 # Build debug mode (for Zig development)
 build-debug:
-	zig build
+	$(ZIG_ENV) zig build
 
 # Run all Zig tests
 test:
-	zig build test
+	$(ZIG_ENV) zig build test
 
 # Build the static library, then build Go example
 build-go: build
@@ -50,7 +72,7 @@ test-infra-start: test-infra-install
 test-live:
 	ZERODEV_PROJECT_ID=$(ZERODEV_PROJECT_ID) \
 	E2E_PRIVATE_KEY=$(or $(E2E_PRIVATE_KEY),ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80) \
-	zig build test-live
+	$(ZIG_ENV) zig build test-live
 
 # Run Go live E2E test against ZeroDev Sepolia (requires ZERODEV_PROJECT_ID)
 test-go-live: build
