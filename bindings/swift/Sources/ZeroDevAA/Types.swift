@@ -8,6 +8,15 @@ public struct Address: Sendable, CustomStringConvertible {
         self.bytes = bytes
     }
 
+    /// Create from a 0x-prefixed hex string.
+    public init(hex: String) throws {
+        let decoded = try hexDecode(hex)
+        guard decoded.count == 20 else {
+            throw AAError.getAddressFailed("Address hex must decode to 20 bytes, got \(decoded.count)")
+        }
+        self.bytes = decoded
+    }
+
     public func toHex() -> String {
         "0x" + hexEncode(bytes)
     }
@@ -21,6 +30,15 @@ public struct Hash: Sendable, CustomStringConvertible {
     public init(bytes: [UInt8]) {
         precondition(bytes.count == 32, "Hash must be 32 bytes")
         self.bytes = bytes
+    }
+
+    /// Create from a 0x-prefixed hex string.
+    public init(hex: String) throws {
+        let decoded = try hexDecode(hex)
+        guard decoded.count == 32 else {
+            throw AAError.invalidHex
+        }
+        self.bytes = decoded
     }
 
     public func toHex() -> String {
