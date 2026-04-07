@@ -64,25 +64,56 @@ build_target() {
 build_target "aarch64-macos" "/Library/Developer/CommandLineTools"
 build_target "x86_64-macos" "/Library/Developer/CommandLineTools"
 
-# iOS targets — currently blocked by Zig build system issue:
-# Zig's build runner links against the target SDK, but iOS SDKs only have .tbd stubs.
-# The static library compiles fine; the build runner link fails.
-# Workaround: build on CI with CommandLineTools-only (no Xcode) + iOS SDK sysroot.
-# TODO: Uncomment when Zig fixes build runner cross-compilation
-# if [ -d "/Applications/Xcode.app" ]; then
-#     build_target "aarch64-ios" "/Applications/Xcode.app/Contents/Developer"
-#     build_target "aarch64-ios-simulator" "/Applications/Xcode.app/Contents/Developer"
-# fi
-echo "  iOS targets: skipped (Zig build system limitation — see TODO in script)"
+# iOS targets (requires Xcode for iOS SDK headers)
+if [ -d "/Applications/Xcode.app" ]; then
+    IOS_SDK=/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk
+    SIM_SDK=/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk
+
+    for target_info in "aarch64-ios:$IOS_SDK" "aarch64-ios-simulator:$SIM_SDK" "x86_64-ios-simulator:$SIM_SDK"; do
+        target="${target_info%%:*}"
+        sdk="${target_info#*:}"
+        echo "  Building $target..."
+        rm -rf "$SDK_ROOT/zig-out"
+        DEVELOPER_DIR=/Library/Developer/CommandLineTools \
+        C_INCLUDE_PATH="$sdk/usr/include" \
+        zig build -Doptimize=ReleaseFast -Dtarget=$target -Dstatic-only=true \
+            --sysroot "$sdk"
+        mkdir -p "$OUT/$target"
+        cp "$SDK_ROOT/zig-out/lib/libzerodev_aa.a" "$OUT/$target/"
+        cp "$SDK_ROOT/zig-out/lib/libsecp256k1.a" "$OUT/$target/"
+        # Repack with libtool
+        for lib in libzerodev_aa.a libsecp256k1.a; do
+            tmpdir=$(mktemp -d)
+            cd "$tmpdir"
+            ar x "$OUT/$target/$lib"
+            chmod 644 *.o 2>/dev/null || true
+            libtool -static -o "$OUT/$target/$lib" *.o 2>/dev/null
+            cd "$SDK_ROOT"
+            rm -rf "$tmpdir"
+        done
+        libtool -static -o "$OUT/$target/libZeroDevAA.a" "$OUT/$target/libzerodev_aa.a" "$OUT/$target/libsecp256k1.a" 2>/dev/null
+        echo "  Done: $(lipo -info "$OUT/$target/libZeroDevAA.a" 2>/dev/null || echo 'built')"
+    done
+else
+    echo "  iOS targets: skipped (Xcode not installed)"
+fi
 
 echo ""
 echo "=== Creating fat binaries ==="
 
-# macOS universal
+# macOS universal (arm64 + x86_64)
 mkdir -p "$OUT/macos-universal"
 lipo -create "$OUT/aarch64-macos/libZeroDevAA.a" "$OUT/x86_64-macos/libZeroDevAA.a" \
      -output "$OUT/macos-universal/libZeroDevAA.a"
 echo "  macOS universal: $(lipo -info "$OUT/macos-universal/libZeroDevAA.a")"
+
+# iOS simulator universal (arm64 + x86_64)
+if [ -f "$OUT/aarch64-ios-simulator/libZeroDevAA.a" ] && [ -f "$OUT/x86_64-ios-simulator/libZeroDevAA.a" ]; then
+    mkdir -p "$OUT/ios-simulator-universal"
+    lipo -create "$OUT/aarch64-ios-simulator/libZeroDevAA.a" "$OUT/x86_64-ios-simulator/libZeroDevAA.a" \
+         -output "$OUT/ios-simulator-universal/libZeroDevAA.a"
+    echo "  iOS sim universal: $(lipo -info "$OUT/ios-simulator-universal/libZeroDevAA.a")"
+fi
 
 echo ""
 echo "=== Creating xcframework ==="
@@ -94,7 +125,9 @@ XCF_ARGS+=(-library "$OUT/macos-universal/libZeroDevAA.a" -headers "$SDK_ROOT/in
 if [ -f "$OUT/aarch64-ios/libZeroDevAA.a" ]; then
     XCF_ARGS+=(-library "$OUT/aarch64-ios/libZeroDevAA.a" -headers "$SDK_ROOT/include")
 fi
-if [ -f "$OUT/aarch64-ios-simulator/libZeroDevAA.a" ]; then
+if [ -f "$OUT/ios-simulator-universal/libZeroDevAA.a" ]; then
+    XCF_ARGS+=(-library "$OUT/ios-simulator-universal/libZeroDevAA.a" -headers "$SDK_ROOT/include")
+elif [ -f "$OUT/aarch64-ios-simulator/libZeroDevAA.a" ]; then
     XCF_ARGS+=(-library "$OUT/aarch64-ios-simulator/libZeroDevAA.a" -headers "$SDK_ROOT/include")
 fi
 

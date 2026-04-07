@@ -60,59 +60,39 @@ jobs:
             done
           done
 
-      - name: Switch to Xcode (for iOS SDK)
-        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
-
       - name: Build iOS targets
         run: |
-          for target in aarch64-ios aarch64-ios-simulator; do
+          IOS_SDK=/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk
+          SIM_SDK=/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk
+
+          for target_info in "aarch64-ios:$IOS_SDK" "aarch64-ios-simulator:$SIM_SDK" "x86_64-ios-simulator:$SIM_SDK"; do
+            target="${target_info%%:*}"
+            sdk="${target_info#*:}"
             echo "=== Building $target ==="
-            rm -rf zig-out .zig-cache
-
-            # Build — will fail at link, but static lib compiles into cache
-            zig build -Doptimize=ReleaseFast -Dtarget=$target -Dstatic-only=true 2>/dev/null || true
-
+            rm -rf zig-out
+            DEVELOPER_DIR=/Library/Developer/CommandLineTools \
+            C_INCLUDE_PATH="$sdk/usr/include" \
+            zig build -Doptimize=ReleaseFast -Dtarget=$target -Dstatic-only=true \
+              --sysroot "$sdk"
             mkdir -p dist/$target
+            cp zig-out/lib/libzerodev_aa.a dist/$target/
+            cp zig-out/lib/libsecp256k1.a dist/$target/
 
-            # Find the iOS .a by checking Mach-O platform tag
-            for lib_name in libzerodev_aa.a libsecp256k1.a; do
-              found=""
-              for candidate in $(find .zig-cache -name "$lib_name" 2>/dev/null); do
-                # Check if this .a contains iOS objects (platform 2=iOS, 7=iOS-sim)
-                platform=$(otool -l "$candidate" 2>/dev/null | grep -A2 "LC_BUILD_VERSION" | grep "platform" | head -1 | awk '{print $2}')
-                if [ "$target" = "aarch64-ios" ] && [ "$platform" = "2" ]; then
-                  found="$candidate"
-                  break
-                elif [ "$target" = "aarch64-ios-simulator" ] && [ "$platform" = "7" ]; then
-                  found="$candidate"
-                  break
-                fi
-              done
-              if [ -n "$found" ]; then
-                cp "$found" "dist/$target/"
-                echo "  Found $lib_name (platform $platform): $found"
-              else
-                echo "  WARNING: $lib_name not found for $target"
-              fi
-            done
-
-            # Repack with libtool
+            # Repack with libtool for Xcode compatibility
             for lib in libzerodev_aa.a libsecp256k1.a; do
-              if [ -f "dist/$target/$lib" ]; then
-                tmpdir=$(mktemp -d)
-                cd "$tmpdir"
-                ar x "$GITHUB_WORKSPACE/dist/$target/$lib"
-                chmod 644 *.o 2>/dev/null || true
-                libtool -static -o "$GITHUB_WORKSPACE/dist/$target/$lib" *.o 2>/dev/null
-                cd "$GITHUB_WORKSPACE"
-                rm -rf "$tmpdir"
-              fi
+              tmpdir=$(mktemp -d)
+              cd "$tmpdir"
+              ar x "$GITHUB_WORKSPACE/dist/$target/$lib"
+              chmod 644 *.o
+              libtool -static -o "$GITHUB_WORKSPACE/dist/$target/$lib" *.o
+              cd "$GITHUB_WORKSPACE"
+              rm -rf "$tmpdir"
             done
           done
 
       - name: Create merged static libs
         run: |
-          for target_dir in dist/aarch64-macos dist/x86_64-macos dist/aarch64-ios dist/aarch64-ios-simulator; do
+          for target_dir in dist/aarch64-macos dist/x86_64-macos dist/aarch64-ios dist/aarch64-ios-simulator dist/x86_64-ios-simulator; do
             if [ -f "$target_dir/libzerodev_aa.a" ] && [ -f "$target_dir/libsecp256k1.a" ]; then
               libtool -static -o "$target_dir/libZeroDevAA.a" \
                 "$target_dir/libzerodev_aa.a" "$target_dir/libsecp256k1.a" 2>/dev/null
@@ -128,6 +108,14 @@ jobs:
                -output dist/macos-universal/libZeroDevAA.a
           echo "macOS universal: $(lipo -info dist/macos-universal/libZeroDevAA.a)"
 
+          # iOS simulator universal (arm64 + x86_64)
+          if [ -f dist/aarch64-ios-simulator/libZeroDevAA.a ] && [ -f dist/x86_64-ios-simulator/libZeroDevAA.a ]; then
+            mkdir -p dist/ios-simulator-universal
+            lipo -create dist/aarch64-ios-simulator/libZeroDevAA.a dist/x86_64-ios-simulator/libZeroDevAA.a \
+                 -output dist/ios-simulator-universal/libZeroDevAA.a
+            echo "iOS sim universal: $(lipo -info dist/ios-simulator-universal/libZeroDevAA.a)"
+          fi
+
       - name: Create xcframework
         run: |
           XCF_ARGS=(-create-xcframework)
@@ -140,8 +128,10 @@ jobs:
             XCF_ARGS+=(-library dist/aarch64-ios/libZeroDevAA.a -headers include)
           fi
 
-          # iOS simulator
-          if [ -f dist/aarch64-ios-simulator/libZeroDevAA.a ]; then
+          # iOS simulator (universal if both archs available)
+          if [ -f dist/ios-simulator-universal/libZeroDevAA.a ]; then
+            XCF_ARGS+=(-library dist/ios-simulator-universal/libZeroDevAA.a -headers include)
+          elif [ -f dist/aarch64-ios-simulator/libZeroDevAA.a ]; then
             XCF_ARGS+=(-library dist/aarch64-ios-simulator/libZeroDevAA.a -headers include)
           fi
 
