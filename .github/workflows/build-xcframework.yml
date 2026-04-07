@@ -120,6 +120,7 @@ jobs:
           fi
 
           XCF_ARGS+=(-output dist/ZeroDevAA.xcframework)
+          rm -rf dist/ZeroDevAA.xcframework
           xcodebuild "${XCF_ARGS[@]}"
 
           # Add module map
