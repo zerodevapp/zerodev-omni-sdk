@@ -8,6 +8,11 @@
             .url = "https://github.com/ch4r10t33r/zigeth/archive/v0.4.0.tar.gz",
             .hash = "zigeth-0.2.1-5mqWFBsFEAAsa4-RVOiEpwfANnk0os50mP-j5ogPPWu8",
         },
+        // Override zigeth's stale secp256k1 URL (DaviRain-Su repo was deleted)
+        .zig_eth_secp256k1 = .{
+            .url = "https://github.com/jsign/zig-eth-secp256k1/archive/refs/heads/main.tar.gz",
+            .hash = "zig_eth_secp256k1-0.1.0-_U97sBjqDACdmkjL_I_1dncMBvOZ0iSxbcMg4pIcVM4P",
+        },
     },
     .paths = .{
         "build.zig",
