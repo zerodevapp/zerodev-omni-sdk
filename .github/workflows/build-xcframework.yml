@@ -116,6 +116,9 @@ jobs:
             echo "iOS sim universal: $(lipo -info dist/ios-simulator-universal/libZeroDevAA.a)"
           fi
 
+      - name: Switch to Xcode for xcodebuild
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
       - name: Create xcframework
         run: |
           XCF_ARGS=(-create-xcframework)
