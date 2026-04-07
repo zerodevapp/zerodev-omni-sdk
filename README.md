@@ -6,22 +6,12 @@ One Zig core → Go, Rust, Swift, Kotlin, Python, C.
 
 ## Install
 
-**Swift (SPM):**
+**Swift (SPM) — no Zig required:**
 ```swift
 .package(url: "https://github.com/zerodevapp/zerodev-omni-sdk.git", from: "0.0.1-alpha")
 ```
 
-**Go:**
-```bash
-go get github.com/zerodevapp/zerodev-omni-sdk/bindings/go
-```
-
-**Rust:**
-```toml
-zerodev-aa = { git = "https://github.com/zerodevapp/zerodev-omni-sdk", branch = "main" }
-```
-
-**Python / Kotlin** — see [Getting Started](#getting-started) below.
+**Go, Rust, Kotlin, Python** — requires building from source. See [Getting Started](#getting-started-from-source).
 
 ## Quick Start
 
