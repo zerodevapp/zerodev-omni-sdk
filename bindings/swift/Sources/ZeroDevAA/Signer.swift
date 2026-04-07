@@ -145,6 +145,14 @@ public final class Signer: @unchecked Sendable {
         return Signer(ptr: p, customRef: retained)
     }
 
+    /// Create a signer from an async implementation (Privy, WalletConnect, etc.).
+    ///
+    /// Bridges async signing to the synchronous C FFI using a dedicated dispatch queue,
+    /// avoiding the semaphore deadlock that occurs on iOS's cooperative executor.
+    public static func async(_ impl: AsyncSignerProtocol) throws -> Signer {
+        return try custom(AsyncSignerBridge(impl))
+    }
+
     deinit {
         aa_signer_destroy(ptr)
         customRef?.release()

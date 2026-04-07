@@ -53,10 +53,24 @@ pub fn freeValue(allocator: std.mem.Allocator, value: std.json.Value) void {
     }
 }
 
+/// C-compatible HTTP transport callback.
+/// Host implements: POST url with body, return response.
+/// Response must be heap-allocated; the SDK copies and the caller frees.
+pub const HttpFn = *const fn (
+    ?*anyopaque, // user context
+    [*]const u8, // url (null-terminated)
+    [*]const u8, // body
+    usize, // body_len
+    *[*]u8, // response_out
+    *usize, // response_len_out
+) callconv(.c) c_int;
+
 pub const Client = struct {
     allocator: std.mem.Allocator,
     endpoint: []const u8,
     next_id: u64,
+    http_fn: ?HttpFn = null,
+    http_ctx: ?*anyopaque = null,
 
     pub fn init(allocator: std.mem.Allocator, endpoint: []const u8) !Client {
         return .{
@@ -84,7 +98,23 @@ pub const Client = struct {
         const request_json = try std.json.Stringify.valueAlloc(self.allocator, std.json.Value{ .object = obj }, .{});
         defer self.allocator.free(request_json);
 
-        const body = try http_post(self.allocator, self.endpoint, request_json);
+        const body = if (self.http_fn) |f| blk: {
+            // Use host-provided transport (URLSession, OkHttp, etc.)
+            var resp_ptr: [*]u8 = undefined;
+            var resp_len: usize = 0;
+
+            // Null-terminate the endpoint for C
+            const url_z = try self.allocator.dupeZ(u8, self.endpoint);
+            defer self.allocator.free(url_z);
+
+            const status = f(self.http_ctx, url_z.ptr, request_json.ptr, request_json.len, &resp_ptr, &resp_len);
+            if (status != 0) return error.HttpTransportFailed;
+
+            // Copy response to our allocator and free the host's buffer
+            const owned = try self.allocator.dupe(u8, resp_ptr[0..resp_len]);
+            std.c.free(resp_ptr);
+            break :blk owned;
+        } else try http_post(self.allocator, self.endpoint, request_json);
         defer self.allocator.free(body);
 
         const parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, body, .{});

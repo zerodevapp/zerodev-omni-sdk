@@ -120,6 +120,16 @@ aa_status aa_context_set_gas_middleware(aa_context_t *ctx,
 aa_status aa_context_set_paymaster_middleware(aa_context_t *ctx,
                                               aa_paymaster_fn middleware);
 
+/** Custom HTTP transport — lets host use URLSession (iOS), OkHttp, etc. */
+typedef int (*aa_http_fn)(void *ctx,
+                           const char *url,
+                           const char *body, size_t body_len,
+                           char **response_out, size_t *response_len_out);
+
+aa_status aa_context_set_http_transport(aa_context_t *ctx,
+                                         aa_http_fn transport,
+                                         void *transport_ctx);
+
 aa_status aa_context_destroy(aa_context_t *ctx);
 
 /* ---- Built-in middleware ---- */
