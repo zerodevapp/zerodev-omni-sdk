@@ -10,8 +10,8 @@ let package = Package(
     targets: [
         .binaryTarget(
             name: "CZeroDevAA",
-            url: "https://github.com/zerodevapp/zerodev-omni-sdk/releases/download/v0.0.1-alpha.1/ZeroDevAA.xcframework.zip",
-            checksum: "89da8a1f099c6073c6d11992d68f5180f1eb5d4b4c4336cb83adcc37b1ff0fc4"
+            url: "https://github.com/zerodevapp/zerodev-omni-sdk/releases/download/v0.0.1-alpha.2/ZeroDevAA.xcframework.zip",
+            checksum: "c8901276e747086be27b69b847c6e2f977e9b9842425a1a2cf4d75b3a615d030"
         ),
         .target(
             name: "ZeroDevAA",
