@@ -138,6 +138,8 @@ pub const ContextImpl = struct {
     chain_id: u64,
     gas_middleware: ?GasPriceFn,
     paymaster_middleware: ?PaymasterFn,
+    http_fn: ?transport.HttpFn = null,
+    http_ctx: ?*anyopaque = null,
 };
 
 pub export fn aa_context_create(
@@ -234,6 +236,8 @@ pub export fn aa_gas_zerodev(
         setLastError("failed to create RPC client for gas price", .{});
         return .send_userop_failed;
     };
+    rpc.http_fn = c.http_fn;
+    rpc.http_ctx = c.http_ctx;
     defer rpc.deinit();
 
     const result = rpc.callWithParams("zd_getUserOperationGasPrice", &[_]std.json.Value{}) catch |err| {
@@ -289,6 +293,17 @@ pub export fn aa_context_set_paymaster_middleware(
     return .ok;
 }
 
+pub export fn aa_context_set_http_transport(
+    ctx: ?*ContextImpl,
+    http_fn: ?transport.HttpFn,
+    http_ctx: ?*anyopaque,
+) callconv(.c) Status {
+    const c = ctx orelse return .null_context;
+    c.http_fn = http_fn;
+    c.http_ctx = http_ctx;
+    return .ok;
+}
+
 /// Built-in: ZeroDev paymaster middleware.
 /// Calls pm_getPaymasterStubData (stub phase) or pm_getPaymasterData (final phase).
 pub export fn aa_paymaster_zerodev(
@@ -325,6 +340,8 @@ pub export fn aa_paymaster_zerodev(
         setLastError("failed to create RPC client for paymaster", .{});
         return .paymaster_failed;
     };
+    rpc.http_fn = c.http_fn;
+    rpc.http_ctx = c.http_ctx;
     defer rpc.deinit();
 
     // Parse the UserOp JSON into a std.json.Value for the RPC call
@@ -954,6 +971,8 @@ pub export fn aa_send_userop(
         setLastError("failed to create RPC client", .{});
         return .send_userop_failed;
     };
+    rpc.http_fn = acc.context.http_fn;
+    rpc.http_ctx = acc.context.http_ctx;
 
     const chain_id = acc.context.chain_id;
     const entry_point = Address.fromHex(core.ENTRY_POINT_V07) catch return .send_userop_failed;
@@ -1195,6 +1214,8 @@ pub export fn aa_wait_for_user_operation_receipt(
         setLastError("failed to create RPC client for receipt polling", .{});
         return .receipt_failed;
     };
+    rpc.http_fn = acc.context.http_fn;
+    rpc.http_ctx = acc.context.http_ctx;
     defer rpc.deinit();
 
     // Build RPC params: [userOpHash]

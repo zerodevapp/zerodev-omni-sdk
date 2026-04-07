@@ -21,6 +21,9 @@ public final class Context: @unchecked Sendable {
         case .none:
             break
         }
+
+        // Use URLSession for all HTTP on Apple platforms (Zig's TLS fails on iOS)
+        useURLSessionTransport()
     }
 
     public func newAccount(signer: Signer, version: KernelVersion, index: UInt32 = 0) throws -> Account {
