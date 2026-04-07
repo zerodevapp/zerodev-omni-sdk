@@ -1,9 +1,7 @@
 name: Build xcframework
 
 on:
-  push:
-    tags: ['v*']
-  workflow_dispatch: # manual trigger
+  workflow_dispatch: {}
 
 jobs:
   build:
@@ -12,6 +10,25 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - uses: actions/checkout@v5
+
+      - name: Determine version
+        run: |
+          BASE=$(cat VERSION | tr -d '[:space:]')
+
+          # Auto-increment build number: v0.0.1-alpha.1, v0.0.1-alpha.2, ...
+          git fetch --tags
+          LATEST=$(git tag -l "v${BASE}.*" | sort -t. -k5 -n | tail -1)
+          if [ -n "$LATEST" ]; then
+            BUILD=$(echo "$LATEST" | grep -o '[0-9]*$')
+            BUILD=$((BUILD + 1))
+          else
+            BUILD=1
+          fi
+
+          VERSION="${BASE}.${BUILD}"
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "TAG=v$VERSION" >> $GITHUB_ENV
+          echo "Building release: v$VERSION"
 
       - name: Install Zig
         uses: goto-bus-stop/setup-zig@v2
@@ -162,34 +179,38 @@ jobs:
           name: ZeroDevAA.xcframework
           path: dist/ZeroDevAA.xcframework.zip
 
-      - name: Update Package.swift checksum
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Update Package.swift and create tag
         run: |
-          TAG="${{ github.ref_name }}"
+          TAG="${{ env.TAG }}"
           URL="https://github.com/${{ github.repository }}/releases/download/$TAG/ZeroDevAA.xcframework.zip"
-          # Update root Package.swift
+
+          # Skip if tag already exists
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists — skipping"
+            exit 0
+          fi
+
+          # Update root Package.swift with correct checksum + URL
           sed -i '' "s|url: \".*ZeroDevAA.xcframework.zip\"|url: \"$URL\"|" Package.swift
           sed -i '' "s|checksum: \".*\"|checksum: \"${{ env.CHECKSUM }}\"|" Package.swift
-          # Update bindings/swift/Package.swift too
-          if grep -q "checksum:" bindings/swift/Package.swift 2>/dev/null; then
-            sed -i '' "s|checksum: \".*\"|checksum: \"${{ env.CHECKSUM }}\"|" bindings/swift/Package.swift
-          fi
-          # Commit and push to main
+
+          # Commit to main
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git fetch origin main
-          git checkout -B main origin/main
-          git add Package.swift bindings/swift/Package.swift
-          git diff --cached --quiet || git commit -m "Update xcframework checksum for $TAG [skip ci]"
+          git add Package.swift
+          git commit -m "Release $TAG — update xcframework checksum [skip ci]"
           git push origin main
-          # Move tag to include updated checksum
-          git tag -f "$TAG"
-          git push origin "$TAG" --force
+
+          # Create tag on the commit that has the correct checksum
+          git tag "$TAG"
+          git push origin "$TAG"
+
+          echo "TAG=$TAG" >> $GITHUB_ENV
 
       - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.TAG }}
           files: dist/ZeroDevAA.xcframework.zip
           body: |
             ## ZeroDevAA xcframework
@@ -198,5 +219,5 @@ jobs:
 
             ### Swift Package Manager
             ```swift
-            .package(url: "https://github.com/${{ github.repository }}.git", from: "${{ github.ref_name }}")
+            .package(url: "https://github.com/${{ github.repository }}.git", from: "${{ github.event.inputs.version }}")
             ```
