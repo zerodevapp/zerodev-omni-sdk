@@ -8,8 +8,10 @@ on:
 jobs:
   build:
     runs-on: macos-14 # Apple Silicon runner
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Zig
         uses: goto-bus-stop/setup-zig@v2
@@ -155,14 +157,14 @@ jobs:
           SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk swift build --target ZeroDevAA
 
       - name: Upload xcframework artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ZeroDevAA.xcframework
           path: dist/ZeroDevAA.xcframework.zip
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/ZeroDevAA.xcframework.zip
           body: |
