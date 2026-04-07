@@ -46,27 +46,34 @@ jobs:
 
       - name: Build iOS targets
         run: |
-          # iOS builds: Zig's build runner fails to link against .tbd stubs,
-          # but the static library is compiled. We extract it from the cache.
           for target in aarch64-ios aarch64-ios-simulator; do
             echo "=== Building $target ==="
-            rm -rf zig-out
+            rm -rf zig-out .zig-cache
 
-            # Run build — expect failure (build runner link error), but .a is in cache
+            # Build — will fail at link, but static lib compiles into cache
             zig build -Doptimize=ReleaseFast -Dtarget=$target -Dstatic-only=true 2>/dev/null || true
 
             mkdir -p dist/$target
 
-            # Extract from zig cache — find the most recently built .a
+            # Find the iOS .a by checking Mach-O platform tag
             for lib_name in libzerodev_aa.a libsecp256k1.a; do
-              latest=$(find .zig-cache -name "$lib_name" -newer build.zig 2>/dev/null | tail -1)
-              if [ -n "$latest" ]; then
-                cp "$latest" "dist/$target/"
-                echo "  Found $lib_name: $latest"
+              found=""
+              for candidate in $(find .zig-cache -name "$lib_name" 2>/dev/null); do
+                # Check if this .a contains iOS objects (platform 2=iOS, 7=iOS-sim)
+                platform=$(otool -l "$candidate" 2>/dev/null | grep -A2 "LC_BUILD_VERSION" | grep "platform" | head -1 | awk '{print $2}')
+                if [ "$target" = "aarch64-ios" ] && [ "$platform" = "2" ]; then
+                  found="$candidate"
+                  break
+                elif [ "$target" = "aarch64-ios-simulator" ] && [ "$platform" = "7" ]; then
+                  found="$candidate"
+                  break
+                fi
+              done
+              if [ -n "$found" ]; then
+                cp "$found" "dist/$target/"
+                echo "  Found $lib_name (platform $platform): $found"
               else
-                echo "  ERROR: Could not find $lib_name for $target"
-                # Fallback: try zig-out
-                [ -f "zig-out/lib/$lib_name" ] && cp "zig-out/lib/$lib_name" "dist/$target/"
+                echo "  WARNING: $lib_name not found for $target"
               fi
             done
 
