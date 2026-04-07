@@ -19,6 +19,13 @@ jobs:
       - name: Switch to CommandLineTools (for Zig libc linkage)
         run: sudo xcode-select -s /Library/Developer/CommandLineTools
 
+      - name: Fetch and fix dependencies
+        run: |
+          # Fetch our deps first
+          zig fetch --save https://github.com/ch4r10t33r/zigeth/archive/v0.2.1.tar.gz 2>/dev/null || true
+          # Warm the cache with a native build attempt (may fail, that's ok)
+          zig build 2>/dev/null || true
+
       - name: Build macOS targets
         run: |
           for target in aarch64-macos x86_64-macos; do
