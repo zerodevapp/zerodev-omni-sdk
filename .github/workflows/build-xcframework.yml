@@ -19,21 +19,6 @@ jobs:
       - name: Switch to CommandLineTools (for Zig libc linkage)
         run: sudo xcode-select -s /Library/Developer/CommandLineTools
 
-      - name: Fetch and fix dependencies
-        run: |
-          # Warm dep cache with native build
-          zig build 2>/dev/null || true
-          # Fix zigeth's secp256k1 hash mismatch (upstream bug: hash varies by platform)
-          ZIGETH_ZON=$(find ~/.cache/zig/p -name "build.zig.zon" -path "*/zigeth*" 2>/dev/null | head -1)
-          if [ -n "$ZIGETH_ZON" ]; then
-            # Get the actual hash of the fetched secp256k1 package
-            ACTUAL_HASH=$(find ~/.cache/zig/p -maxdepth 1 -name "zig_eth_secp256k1*" -type d 2>/dev/null | head -1 | xargs basename)
-            if [ -n "$ACTUAL_HASH" ]; then
-              echo "Patching zigeth secp256k1 hash to: $ACTUAL_HASH"
-              sed -i '' "s/zig_eth_secp256k1-[^\"]*/$ACTUAL_HASH/" "$ZIGETH_ZON"
-            fi
-          fi
-
       - name: Build macOS targets
         run: |
           for target in aarch64-macos x86_64-macos; do

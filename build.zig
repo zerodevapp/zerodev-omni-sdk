@@ -11,9 +11,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const zigeth_mod = zigeth_dep.module("zigeth");
-    const zigeth_artifact = zigeth_dep.artifact("zigeth_lib");
 
-    // Get secp256k1 through zigeth's dependency
+    // Get secp256k1 through zigeth's dependency (for native C code linking)
     const secp256k1_dep = zigeth_dep.builder.dependency("zig_eth_secp256k1", .{
         .target = target,
         .optimize = optimize,
@@ -90,7 +89,7 @@ pub fn build(b: *std.Build) void {
         .root_module = c_api_mod,
     });
     static_lib.bundle_compiler_rt = true;
-    static_lib.linkLibrary(zigeth_artifact);
+    static_lib.linkLibrary(secp256k1_artifact);
     b.installArtifact(static_lib);
 
     // Dynamic library (skip for iOS/cross-compilation with -Dstatic-only)
@@ -108,7 +107,7 @@ pub fn build(b: *std.Build) void {
         dynamic_lib.root_module.addImport("zigeth", zigeth_mod);
         dynamic_lib.root_module.addImport("transport", transport_mod);
         dynamic_lib.root_module.addImport("signers", signers_mod);
-        dynamic_lib.linkLibrary(zigeth_artifact);
+        dynamic_lib.linkLibrary(secp256k1_artifact);
         b.installArtifact(dynamic_lib);
     }
 
@@ -129,7 +128,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     lib_tests.linkLibC();
-    lib_tests.linkLibrary(zigeth_artifact);
+    lib_tests.linkLibrary(secp256k1_artifact);
     const run_lib_tests = b.addRunArtifact(lib_tests);
 
     const test_step = b.step("test", "Run unit tests");
@@ -152,7 +151,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     e2e_tests.linkLibC();
-    e2e_tests.linkLibrary(zigeth_artifact);
+    e2e_tests.linkLibrary(secp256k1_artifact);
     const run_e2e_tests = b.addRunArtifact(e2e_tests);
 
     const e2e_step = b.step("test-e2e", "Run E2E tests (requires local Anvil + Alto)");
@@ -175,7 +174,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     live_tests.linkLibC();
-    live_tests.linkLibrary(zigeth_artifact);
+    live_tests.linkLibrary(secp256k1_artifact);
     const run_live_tests = b.addRunArtifact(live_tests);
 
     const live_step = b.step("test-live", "Run live tests against ZeroDev Sepolia");
@@ -206,7 +205,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     live_capi_tests.linkLibC();
-    live_capi_tests.linkLibrary(zigeth_artifact);
+    live_capi_tests.linkLibrary(secp256k1_artifact);
     const run_live_capi_tests = b.addRunArtifact(live_capi_tests);
 
     const live_capi_step = b.step("test-live-capi", "Run C API live tests against ZeroDev Sepolia");

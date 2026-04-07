@@ -49,7 +49,7 @@ pub const LocalSigner = struct {
         return .{
             .r = sig.r,
             .s = sig.s,
-            .v = sig.v,
+            .v = @intCast(sig.v),
         };
     }
 
