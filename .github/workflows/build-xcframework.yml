@@ -162,6 +162,31 @@ jobs:
           name: ZeroDevAA.xcframework
           path: dist/ZeroDevAA.xcframework.zip
 
+      - name: Update Package.swift checksum
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          TAG="${{ github.ref_name }}"
+          URL="https://github.com/${{ github.repository }}/releases/download/$TAG/ZeroDevAA.xcframework.zip"
+          # Update root Package.swift
+          sed -i '' "s|url: \".*ZeroDevAA.xcframework.zip\"|url: \"$URL\"|" Package.swift
+          sed -i '' "s|checksum: \".*\"|checksum: \"${{ env.CHECKSUM }}\"|" Package.swift
+          # Update bindings/swift/Package.swift too
+          if grep -q "checksum:" bindings/swift/Package.swift 2>/dev/null; then
+            sed -i '' "s|checksum: \".*\"|checksum: \"${{ env.CHECKSUM }}\"|" bindings/swift/Package.swift
+          fi
+          # Commit and push to main
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout main
+          git pull origin main
+          cp Package.swift .
+          git add Package.swift bindings/swift/Package.swift
+          git diff --cached --quiet || git commit -m "Update xcframework checksum for $TAG [skip ci]"
+          git push origin main
+          # Move tag to include updated checksum
+          git tag -f "$TAG"
+          git push origin "$TAG" --force
+
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
@@ -174,9 +199,5 @@ jobs:
 
             ### Swift Package Manager
             ```swift
-            .binaryTarget(
-                name: "CZeroDevAA",
-                url: "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/ZeroDevAA.xcframework.zip",
-                checksum: "${{ env.CHECKSUM }}"
-            )
+            .package(url: "https://github.com/${{ github.repository }}.git", from: "${{ github.ref_name }}")
             ```
