@@ -1,0 +1,110 @@
+name: Publish Kotlin to Maven Central
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  publish:
+    runs-on: macos-14
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Determine version
+        run: |
+          BASE=$(cat VERSION | tr -d '[:space:]')
+
+          git fetch --tags
+          LATEST=$(git tag -l "kotlin-v${BASE}.*" | sort -t. -k5 -n | tail -1)
+          if [ -n "$LATEST" ]; then
+            BUILD=$(echo "$LATEST" | grep -o '[0-9]*$')
+            BUILD=$((BUILD + 1))
+          else
+            BUILD=1
+          fi
+
+          VERSION="${BASE}.${BUILD}"
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "Building Kotlin release: $VERSION"
+
+      - name: Install Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: '0.15.2'
+
+      - name: Switch to CommandLineTools
+        run: sudo xcode-select -s /Library/Developer/CommandLineTools
+
+      - name: Cross-compile native libraries
+        run: |
+          RESOURCE_DIR=bindings/kotlin/src/main/resources
+
+          # macOS arm64
+          echo "=== Building aarch64-macos ==="
+          rm -rf zig-out
+          zig build -Doptimize=ReleaseFast -Dtarget=aarch64-macos
+          mkdir -p "$RESOURCE_DIR/darwin-aarch64"
+          cp zig-out/lib/libzerodev_aa.dylib "$RESOURCE_DIR/darwin-aarch64/"
+
+          # macOS x86_64
+          echo "=== Building x86_64-macos ==="
+          rm -rf zig-out
+          zig build -Doptimize=ReleaseFast -Dtarget=x86_64-macos
+          mkdir -p "$RESOURCE_DIR/darwin-x86-64"
+          cp zig-out/lib/libzerodev_aa.dylib "$RESOURCE_DIR/darwin-x86-64/"
+
+          # Linux x86_64
+          echo "=== Building x86_64-linux-gnu ==="
+          rm -rf zig-out
+          zig build -Doptimize=ReleaseFast -Dtarget=x86_64-linux-gnu
+          mkdir -p "$RESOURCE_DIR/linux-x86-64"
+          cp zig-out/lib/libzerodev_aa.so "$RESOURCE_DIR/linux-x86-64/"
+
+          # Linux arm64
+          echo "=== Building aarch64-linux-gnu ==="
+          rm -rf zig-out
+          zig build -Doptimize=ReleaseFast -Dtarget=aarch64-linux-gnu
+          mkdir -p "$RESOURCE_DIR/linux-aarch64"
+          cp zig-out/lib/libzerodev_aa.so "$RESOURCE_DIR/linux-aarch64/"
+
+          echo "Bundled native libraries:"
+          find "$RESOURCE_DIR" -type f -name "libzerodev_aa.*" | sort
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Update version in build.gradle.kts
+        run: |
+          cd bindings/kotlin
+          sed -i '' "s/version = \".*\"/version = \"${{ env.VERSION }}\"/" build.gradle.kts
+          echo "Gradle version set to: ${{ env.VERSION }}"
+
+      - name: Build and verify JAR
+        run: |
+          cd bindings/kotlin
+          ./gradlew build -x test
+          echo "=== JAR contents (native libs) ==="
+          jar tf build/libs/zerodev-aa-${{ env.VERSION }}.jar | grep -E "(darwin|linux)" || true
+
+      - name: Publish to Maven Central
+        env:
+          OSSRH_USERNAME: ${{ secrets.OSSRH_USERNAME }}
+          OSSRH_PASSWORD: ${{ secrets.OSSRH_PASSWORD }}
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          cd bindings/kotlin
+          ./gradlew publish
+
+      - name: Tag release
+        run: |
+          TAG="kotlin-v${{ env.VERSION }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "$TAG"
+          git push origin "$TAG"
+          echo "Tagged: $TAG"
