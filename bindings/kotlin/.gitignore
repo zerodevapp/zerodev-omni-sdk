@@ -5,3 +5,4 @@ build/
 # Native libraries bundled by CI (not checked in)
 src/main/resources/darwin-*/
 src/main/resources/linux-*/
+src/main/resources/android-*/

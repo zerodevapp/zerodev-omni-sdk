@@ -71,6 +71,49 @@ jobs:
           echo "Bundled native libraries:"
           find "$RESOURCE_DIR" -type f -name "libzerodev_aa.*" | sort
 
+      - name: Cross-compile Android native libraries
+        run: |
+          RESOURCE_DIR=bindings/kotlin/src/main/resources
+
+          # Find Android NDK (pre-installed on GitHub Actions macOS runners)
+          NDK_HOME="${ANDROID_NDK_HOME:-$(ls -d $ANDROID_HOME/ndk/*/ 2>/dev/null | sort -V | tail -1)}"
+          NDK_HOME="${NDK_HOME%/}"
+          if [ -z "$NDK_HOME" ]; then
+            echo "::error::Android NDK not found"
+            exit 1
+          fi
+          SYSROOT="$NDK_HOME/toolchains/llvm/prebuilt/darwin-x86_64/sysroot"
+          TOOLCHAIN="$NDK_HOME/toolchains/llvm/prebuilt/darwin-x86_64/bin"
+          echo "Using NDK: $NDK_HOME"
+
+          # Zig can't provide Android libc, so we:
+          # 1. Build static libs with Zig (using NDK headers)
+          # 2. Link into .so with NDK's clang
+
+          for target_info in "aarch64:aarch64-linux-android:aarch64-linux-android21-clang:android-aarch64" \
+                             "x86_64:x86_64-linux-android:x86_64-linux-android21-clang:android-x86-64"; do
+            IFS=: read -r arch zig_target ndk_cc jna_dir <<< "$target_info"
+            echo "=== Building $zig_target ==="
+
+            # Step 1: Zig builds static libs
+            rm -rf zig-out
+            C_INCLUDE_PATH="$SYSROOT/usr/include:$SYSROOT/usr/include/$arch-linux-android" \
+              zig build -Doptimize=ReleaseFast -Dtarget=$zig_target -Dstatic-only=true \
+              --sysroot "$SYSROOT"
+
+            # Step 2: NDK clang links static libs into shared lib
+            "$TOOLCHAIN/$ndk_cc" -shared -o zig-out/lib/libzerodev_aa.so \
+              -Wl,--whole-archive zig-out/lib/libzerodev_aa.a zig-out/lib/libsecp256k1.a -Wl,--no-whole-archive \
+              -lc -lm -ldl
+
+            mkdir -p "$RESOURCE_DIR/$jna_dir"
+            cp zig-out/lib/libzerodev_aa.so "$RESOURCE_DIR/$jna_dir/"
+            echo "Built: $RESOURCE_DIR/$jna_dir/libzerodev_aa.so"
+          done
+
+          echo "Bundled Android native libraries:"
+          find "$RESOURCE_DIR/android-*" -type f -name "libzerodev_aa.*" | sort
+
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
