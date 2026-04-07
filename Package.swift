@@ -11,7 +11,7 @@ let package = Package(
         .binaryTarget(
             name: "CZeroDevAA",
             url: "https://github.com/zerodevapp/zerodev-omni-sdk/releases/download/v0.0.1-alpha/ZeroDevAA.xcframework.zip",
-            checksum: "ec95bf2cd8b42ee23b34dd7560f948b63b5c3724606ee45efbb44a5e6e9bd1ff"
+            checksum: "b6c8c9aac92848b6f1d3ca445423646fc5faf1f6e6d46aa4b3b308f2b1ba5e1b"
         ),
         .target(
             name: "ZeroDevAA",
