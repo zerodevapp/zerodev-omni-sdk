@@ -33,49 +33,78 @@ jobs:
         with:
           version: '0.15.2'
 
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
       - name: Switch to CommandLineTools
         run: sudo xcode-select -s /Library/Developer/CommandLineTools
 
-      - name: Cross-compile native libraries
+      - name: Cross-compile desktop native libraries (JNI)
         run: |
           RESOURCE_DIR=bindings/kotlin/src/main/resources
+          JNI_SRC=bindings/kotlin/jni/zerodev_aa_jni.c
+          JNI_INC="$JAVA_HOME/include"
+
+          # Helper: build static libs with Zig, repack for macOS, compile JNI bridge
+          build_desktop() {
+            local zig_target="$1" platform_dir="$2" ext="$3" cc="$4" extra_flags="$5"
+
+            echo "=== Building $zig_target ==="
+            rm -rf zig-out
+            zig build -Doptimize=ReleaseFast -Dtarget=$zig_target -Dstatic-only=true
+
+            # Repack archives for Xcode linker compatibility (macOS only)
+            if [[ "$ext" == "dylib" ]]; then
+              for lib in libzerodev_aa.a libsecp256k1.a; do
+                tmpdir=$(mktemp -d)
+                cd "$tmpdir"
+                ar x "$GITHUB_WORKSPACE/zig-out/lib/$lib"
+                chmod 644 *.o
+                libtool -static -o "$GITHUB_WORKSPACE/zig-out/lib/$lib" *.o 2>/dev/null
+                cd "$GITHUB_WORKSPACE"
+                rm -rf "$tmpdir"
+              done
+            fi
+
+            # Compile JNI bridge + link with static libs
+            mkdir -p "$RESOURCE_DIR/$platform_dir"
+            $cc -shared -o "$RESOURCE_DIR/$platform_dir/libzerodev_aa.$ext" \
+              -I"$JNI_INC" -I"$JNI_INC/darwin" -I"$JNI_INC/linux" -Iinclude \
+              "$JNI_SRC" \
+              $extra_flags \
+              2>&1
+
+            echo "Built: $RESOURCE_DIR/$platform_dir/libzerodev_aa.$ext"
+          }
 
           # macOS arm64
-          echo "=== Building aarch64-macos ==="
-          rm -rf zig-out
-          zig build -Doptimize=ReleaseFast -Dtarget=aarch64-macos
-          mkdir -p "$RESOURCE_DIR/darwin-aarch64"
-          cp zig-out/lib/libzerodev_aa.dylib "$RESOURCE_DIR/darwin-aarch64/"
+          build_desktop "aarch64-macos" "darwin-aarch64" "dylib" "clang" \
+            "-target arm64-apple-macos11 -Wl,-force_load,zig-out/lib/libzerodev_aa.a -Wl,-force_load,zig-out/lib/libsecp256k1.a"
 
           # macOS x86_64
-          echo "=== Building x86_64-macos ==="
-          rm -rf zig-out
-          zig build -Doptimize=ReleaseFast -Dtarget=x86_64-macos
-          mkdir -p "$RESOURCE_DIR/darwin-x86-64"
-          cp zig-out/lib/libzerodev_aa.dylib "$RESOURCE_DIR/darwin-x86-64/"
+          build_desktop "x86_64-macos" "darwin-x86-64" "dylib" "clang" \
+            "-target x86_64-apple-macos11 -Wl,-force_load,zig-out/lib/libzerodev_aa.a -Wl,-force_load,zig-out/lib/libsecp256k1.a"
 
-          # Linux x86_64
-          echo "=== Building x86_64-linux-gnu ==="
-          rm -rf zig-out
-          zig build -Doptimize=ReleaseFast -Dtarget=x86_64-linux-gnu
-          mkdir -p "$RESOURCE_DIR/linux-x86-64"
-          cp zig-out/lib/libzerodev_aa.so "$RESOURCE_DIR/linux-x86-64/"
+          # Linux x86_64 (use zig cc as cross-compiler)
+          build_desktop "x86_64-linux-gnu" "linux-x86-64" "so" "zig cc -target x86_64-linux-gnu" \
+            "-Wl,--whole-archive zig-out/lib/libzerodev_aa.a zig-out/lib/libsecp256k1.a -Wl,--no-whole-archive -lc -lm"
 
-          # Linux arm64
-          echo "=== Building aarch64-linux-gnu ==="
-          rm -rf zig-out
-          zig build -Doptimize=ReleaseFast -Dtarget=aarch64-linux-gnu
-          mkdir -p "$RESOURCE_DIR/linux-aarch64"
-          cp zig-out/lib/libzerodev_aa.so "$RESOURCE_DIR/linux-aarch64/"
+          # Linux arm64 (use zig cc as cross-compiler)
+          build_desktop "aarch64-linux-gnu" "linux-aarch64" "so" "zig cc -target aarch64-linux-gnu" \
+            "-Wl,--whole-archive zig-out/lib/libzerodev_aa.a zig-out/lib/libsecp256k1.a -Wl,--no-whole-archive -lc -lm"
 
-          echo "Bundled native libraries:"
+          echo "=== Desktop native libraries ==="
           find "$RESOURCE_DIR" -type f -name "libzerodev_aa.*" | sort
 
-      - name: Cross-compile Android native libraries
+      - name: Cross-compile Android native libraries (JNI)
         run: |
           RESOURCE_DIR=bindings/kotlin/src/main/resources
+          JNI_SRC=bindings/kotlin/jni/zerodev_aa_jni.c
+          JNI_INC="$JAVA_HOME/include"
 
-          # Find Android NDK (pre-installed on GitHub Actions macOS runners)
           NDK_HOME="${ANDROID_NDK_HOME:-$(ls -d $ANDROID_HOME/ndk/*/ 2>/dev/null | sort -V | tail -1)}"
           NDK_HOME="${NDK_HOME%/}"
           if [ -z "$NDK_HOME" ]; then
@@ -86,13 +115,9 @@ jobs:
           TOOLCHAIN="$NDK_HOME/toolchains/llvm/prebuilt/darwin-x86_64/bin"
           echo "Using NDK: $NDK_HOME"
 
-          # Zig can't provide Android libc, so we:
-          # 1. Build static libs with Zig (using NDK headers)
-          # 2. Link into .so with NDK's clang
-
           for target_info in "aarch64:aarch64-linux-android:aarch64-linux-android21-clang:android-aarch64" \
                              "x86_64:x86_64-linux-android:x86_64-linux-android21-clang:android-x86-64"; do
-            IFS=: read -r arch zig_target ndk_cc jna_dir <<< "$target_info"
+            IFS=: read -r arch zig_target ndk_cc res_dir <<< "$target_info"
             echo "=== Building $zig_target ==="
 
             # Step 1: Zig builds static libs
@@ -101,24 +126,19 @@ jobs:
               zig build -Doptimize=ReleaseFast -Dtarget=$zig_target -Dstatic-only=true \
               --sysroot "$SYSROOT"
 
-            # Step 2: NDK clang links static libs into shared lib
-            "$TOOLCHAIN/$ndk_cc" -shared -o zig-out/lib/libzerodev_aa.so \
+            # Step 2: NDK clang compiles JNI bridge + links everything into .so
+            mkdir -p "$RESOURCE_DIR/$res_dir"
+            "$TOOLCHAIN/$ndk_cc" -shared -o "$RESOURCE_DIR/$res_dir/libzerodev_aa.so" \
+              -I"$JNI_INC" -I"$JNI_INC/linux" -Iinclude \
+              "$JNI_SRC" \
               -Wl,--whole-archive zig-out/lib/libzerodev_aa.a zig-out/lib/libsecp256k1.a -Wl,--no-whole-archive \
               -lc -lm -ldl
 
-            mkdir -p "$RESOURCE_DIR/$jna_dir"
-            cp zig-out/lib/libzerodev_aa.so "$RESOURCE_DIR/$jna_dir/"
-            echo "Built: $RESOURCE_DIR/$jna_dir/libzerodev_aa.so"
+            echo "Built: $RESOURCE_DIR/$res_dir/libzerodev_aa.so"
           done
 
-          echo "Bundled Android native libraries:"
+          echo "=== Android native libraries ==="
           find "$RESOURCE_DIR/android-*" -type f -name "libzerodev_aa.*" | sort
-
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '21'
 
       - name: Update version in build.gradle.kts
         run: |
@@ -131,7 +151,7 @@ jobs:
           cd bindings/kotlin
           ./gradlew build -x test
           echo "=== JAR contents (native libs) ==="
-          jar tf build/libs/zerodev-aa-${{ env.VERSION }}.jar | grep -E "(darwin|linux)" || true
+          jar tf build/libs/zerodev-aa-${{ env.VERSION }}.jar | grep -E "(darwin|linux|android)" || true
 
       - name: Publish to Maven Central
         env:

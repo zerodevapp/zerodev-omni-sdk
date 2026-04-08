@@ -107,14 +107,21 @@ test-swift-live: build
 		E2E_PRIVATE_KEY=$(or $(E2E_PRIVATE_KEY),ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80) \
 		swift run LiveTest
 
-# Build Kotlin binding (requires dynamic lib from `make build`)
+# Build Kotlin binding (compiles JNI bridge + links with static libs)
 build-kotlin: build
+	@# Compile JNI bridge into the dynamic lib (overwrites Zig's version)
+	@JAVA_HOME=$(or $(JAVA_HOME),/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home) && \
+	clang -shared -o zig-out/lib/libzerodev_aa.dylib \
+		-I"$$JAVA_HOME/include" -I"$$JAVA_HOME/include/darwin" -Iinclude \
+		bindings/kotlin/jni/zerodev_aa_jni.c \
+		-Wl,-force_load,zig-out/lib/libzerodev_aa.a \
+		-Wl,-force_load,zig-out/lib/libsecp256k1.a
 	cd bindings/kotlin && \
 		JAVA_HOME=$(or $(JAVA_HOME),/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home) \
 		./gradlew build -x test
 
 # Run Kotlin live E2E test against ZeroDev Sepolia (requires ZERODEV_PROJECT_ID)
-test-kotlin-live: build
+test-kotlin-live: build-kotlin
 	cd bindings/kotlin && \
 		JAVA_HOME=$(or $(JAVA_HOME),/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home) \
 		ZERODEV_PROJECT_ID=$(ZERODEV_PROJECT_ID) \

@@ -26,16 +26,15 @@ repositories {
 }
 
 dependencies {
-    implementation("net.java.dev.jna:jna:5.16.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     testImplementation(kotlin("test"))
 }
 
 tasks.test {
     useJUnitPlatform()
-    // Use bundled resources if available, fall back to zig-out for local dev
+    // For local dev: add zig-out/lib to java.library.path so JNI can find the native lib
     val libPath = file("${rootProject.projectDir}/../../zig-out/lib").absolutePath
-    systemProperty("jna.library.path", libPath)
+    systemProperty("java.library.path", libPath)
     environment("ZERODEV_PROJECT_ID", System.getenv("ZERODEV_PROJECT_ID") ?: "")
     environment("E2E_PRIVATE_KEY", System.getenv("E2E_PRIVATE_KEY") ?: "")
 }

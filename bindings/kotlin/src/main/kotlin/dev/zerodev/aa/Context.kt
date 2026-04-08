@@ -1,9 +1,6 @@
 package dev.zerodev.aa
 
-import com.sun.jna.Pointer
-import com.sun.jna.ptr.PointerByReference
-
-class Context private constructor(internal val ptr: Pointer) : AutoCloseable {
+class Context private constructor(internal val ptr: Long) : AutoCloseable {
     private var closed = false
 
     companion object {
@@ -15,24 +12,16 @@ class Context private constructor(internal val ptr: Pointer) : AutoCloseable {
             gasMiddleware: GasMiddleware = GasMiddleware.ZERODEV,
             paymasterMiddleware: PaymasterMiddleware = PaymasterMiddleware.ZERODEV,
         ): Context {
-            val ptrRef = PointerByReference()
-            checkStatus(NativeLib.INSTANCE.aa_context_create(projectId, rpcUrl, bundlerUrl, chainId, ptrRef))
-            val ctx = ptrRef.value
+            val out = LongArray(1)
+            checkStatus(NativeLib.nContextCreate(projectId, rpcUrl, bundlerUrl, chainId, out))
+            val ctx = out[0]
 
             when (gasMiddleware) {
-                GasMiddleware.ZERODEV -> {
-                    checkStatus(
-                        NativeLib.INSTANCE.aa_context_set_gas_middleware(ctx, NativeLib.getGasZerodevPtr()),
-                    )
-                }
+                GasMiddleware.ZERODEV -> checkStatus(NativeLib.nContextSetGasZeroDev(ctx))
             }
 
             when (paymasterMiddleware) {
-                PaymasterMiddleware.ZERODEV -> {
-                    checkStatus(
-                        NativeLib.INSTANCE.aa_context_set_paymaster_middleware(ctx, NativeLib.getPaymasterZerodevPtr()),
-                    )
-                }
+                PaymasterMiddleware.ZERODEV -> checkStatus(NativeLib.nContextSetPaymasterZeroDev(ctx))
                 PaymasterMiddleware.NONE -> { /* No paymaster — send unsponsored */ }
             }
 
@@ -46,14 +35,14 @@ class Context private constructor(internal val ptr: Pointer) : AutoCloseable {
         index: Int = 0,
     ): Account {
         check(!closed) { "Context is closed" }
-        val ptrRef = PointerByReference()
-        checkStatus(NativeLib.INSTANCE.aa_account_create(ptr, signer.ptr, version.code, index, ptrRef))
-        return Account(ptrRef.value, this)
+        val out = LongArray(1)
+        checkStatus(NativeLib.nAccountCreate(ptr, signer.ptr, version.code, index, out))
+        return Account(out[0], this)
     }
 
     override fun close() {
         if (!closed) {
-            NativeLib.INSTANCE.aa_context_destroy(ptr)
+            NativeLib.nContextDestroy(ptr)
             closed = true
         }
     }
