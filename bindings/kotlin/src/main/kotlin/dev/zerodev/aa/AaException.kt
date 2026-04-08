@@ -52,7 +52,7 @@ class AaException(
 
 internal fun checkStatus(code: Int) {
     if (code != 0) {
-        val detail = NativeLib.INSTANCE.aa_get_last_error()
+        val detail = NativeLib.nGetLastError()
         val status = AaStatus.fromCode(code)
         throw AaException(status, detail)
     }

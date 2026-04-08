@@ -1,92 +1,64 @@
 package dev.zerodev.aa
 
-import com.sun.jna.Callback
-import com.sun.jna.Library
-import com.sun.jna.Native
-import com.sun.jna.NativeLibrary
-import com.sun.jna.NativeLong
-import com.sun.jna.Pointer
-import com.sun.jna.Structure
-import com.sun.jna.ptr.NativeLongByReference
-import com.sun.jna.ptr.PointerByReference
-
-@Structure.FieldOrder("sign_hash", "sign_message", "sign_typed_data_hash", "get_address")
-internal class AaSignerVtable : Structure() {
-    @JvmField var sign_hash: Callback? = null
-    @JvmField var sign_message: Callback? = null
-    @JvmField var sign_typed_data_hash: Callback? = null
-    @JvmField var get_address: Callback? = null
-}
-
-internal interface NativeLib : Library {
-    companion object {
-        val INSTANCE: NativeLib = Native.load("zerodev_aa", NativeLib::class.java)
-
-        private val nativeLib: NativeLibrary = NativeLibrary.getInstance("zerodev_aa")
-
-        fun getGasZerodevPtr(): Pointer = nativeLib.getFunction("aa_gas_zerodev")
-        fun getPaymasterZerodevPtr(): Pointer = nativeLib.getFunction("aa_paymaster_zerodev")
+/**
+ * JNI declarations for the zerodev-aa native library.
+ * All opaque handles (context, signer, account, userop) are passed as Long (native pointer).
+ */
+internal object NativeLib {
+    init {
+        NativeLoader.load()
     }
 
-    fun aa_context_create(
-        project_id: String,
-        rpc_url: String,
-        bundler_url: String,
-        chain_id: Long,
-        out: PointerByReference,
+    /* ---- Context ---- */
+    @JvmStatic external fun nContextCreate(
+        projectId: String, rpcUrl: String, bundlerUrl: String,
+        chainId: Long, out: LongArray,
     ): Int
 
-    fun aa_context_set_gas_middleware(ctx: Pointer, middleware: Pointer?): Int
-    fun aa_context_set_paymaster_middleware(ctx: Pointer, middleware: Pointer?): Int
-    fun aa_context_destroy(ctx: Pointer): Int
+    @JvmStatic external fun nContextSetGasZeroDev(ctxPtr: Long): Int
+    @JvmStatic external fun nContextSetPaymasterZeroDev(ctxPtr: Long): Int
+    @JvmStatic external fun nContextDestroy(ctxPtr: Long): Int
 
-    fun aa_signer_generate(out: PointerByReference): Int
-    fun aa_signer_local(private_key: ByteArray, out: PointerByReference): Int
-    fun aa_signer_rpc(rpc_url: String, address: ByteArray, out: PointerByReference): Int
-    fun aa_signer_custom(vtable: Pointer, ctx: Pointer?, out: PointerByReference): Int
-    fun aa_signer_destroy(signer: Pointer)
+    /* ---- Signer ---- */
+    @JvmStatic external fun nSignerLocal(privateKey: ByteArray, out: LongArray): Int
+    @JvmStatic external fun nSignerGenerate(out: LongArray): Int
+    @JvmStatic external fun nSignerRpc(rpcUrl: String, address: ByteArray, out: LongArray): Int
+    @JvmStatic external fun nSignerCustom(signerImpl: Any, out: LongArray): Int
+    @JvmStatic external fun nSignerDestroy(signerPtr: Long)
+    @JvmStatic external fun nSignerCustomCleanup(vtablePtr: Long, ctxPtr: Long)
 
-    fun aa_account_create(
-        ctx: Pointer,
-        signer: Pointer,
-        version: Int,
-        index: Int,
-        out: PointerByReference,
+    /* ---- Account ---- */
+    @JvmStatic external fun nAccountCreate(
+        ctxPtr: Long, signerPtr: Long, version: Int, index: Int, out: LongArray,
     ): Int
 
-    fun aa_account_get_address(account: Pointer, addr_out: ByteArray): Int
-    fun aa_account_destroy(account: Pointer): Int
+    @JvmStatic external fun nAccountGetAddress(accountPtr: Long, addrOut: ByteArray): Int
+    @JvmStatic external fun nAccountDestroy(accountPtr: Long): Int
 
-    fun aa_send_userop(
-        account: Pointer,
-        calls: Pointer,
-        calls_len: NativeLong,
-        hash_out: ByteArray,
+    /* ---- SendUserOp ---- */
+    @JvmStatic external fun nSendUserOp(
+        accountPtr: Long, targets: ByteArray, values: ByteArray,
+        calldatas: Array<ByteArray?>, callsLen: Int, hashOut: ByteArray,
     ): Int
 
-    fun aa_userop_build(
-        account: Pointer,
-        calls: Pointer,
-        calls_len: NativeLong,
-        out: PointerByReference,
+    /* ---- UserOp (low-level) ---- */
+    @JvmStatic external fun nUserOpBuild(
+        accountPtr: Long, targets: ByteArray, values: ByteArray,
+        calldatas: Array<ByteArray?>, callsLen: Int, out: LongArray,
     ): Int
 
-    fun aa_userop_hash(op: Pointer, account: Pointer, hash_out: ByteArray): Int
-    fun aa_userop_sign(op: Pointer, account: Pointer): Int
-    fun aa_userop_to_json(op: Pointer, json_out: PointerByReference, len_out: NativeLongByReference): Int
-    fun aa_userop_apply_gas_json(op: Pointer, gas_json: String, gas_json_len: NativeLong): Int
-    fun aa_userop_apply_paymaster_json(op: Pointer, pm_json: String, pm_json_len: NativeLong): Int
-    fun aa_userop_destroy(op: Pointer): Int
+    @JvmStatic external fun nUserOpHash(opPtr: Long, accountPtr: Long, hashOut: ByteArray): Int
+    @JvmStatic external fun nUserOpSign(opPtr: Long, accountPtr: Long): Int
+    @JvmStatic external fun nUserOpToJson(opPtr: Long): String?
+    @JvmStatic external fun nUserOpApplyGasJson(opPtr: Long, gasJson: String): Int
+    @JvmStatic external fun nUserOpApplyPaymasterJson(opPtr: Long, pmJson: String): Int
+    @JvmStatic external fun nUserOpDestroy(opPtr: Long): Int
 
-    fun aa_wait_for_user_operation_receipt(
-        account: Pointer,
-        userop_hash: ByteArray,
-        timeout_ms: Int,
-        poll_interval_ms: Int,
-        json_out: PointerByReference,
-        json_len_out: NativeLongByReference,
-    ): Int
+    /* ---- Receipt ---- */
+    @JvmStatic external fun nWaitForReceipt(
+        accountPtr: Long, useropHash: ByteArray, timeoutMs: Int, pollIntervalMs: Int,
+    ): String?
 
-    fun aa_free(ptr: Pointer)
-    fun aa_get_last_error(): String?
+    /* ---- Utility ---- */
+    @JvmStatic external fun nGetLastError(): String?
 }
