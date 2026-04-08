@@ -1,0 +1,59 @@
+name: Publish Rust to crates.io
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  publish:
+    runs-on: macos-14
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Determine version
+        run: |
+          BASE=$(cat VERSION | tr -d '[:space:]')
+
+          git fetch --tags
+          LATEST=$(git tag -l "rust-v${BASE}.*" | sort -t. -k5 -n | tail -1)
+          if [ -n "$LATEST" ]; then
+            BUILD=$(echo "$LATEST" | grep -o '[0-9]*$')
+            BUILD=$((BUILD + 1))
+          else
+            BUILD=1
+          fi
+
+          VERSION="${BASE}.${BUILD}"
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "Building Rust release: $VERSION"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Update version in Cargo.toml
+        run: |
+          cd bindings/rust
+          sed -i '' "s/^version = \".*\"/version = \"${{ env.VERSION }}\"/" Cargo.toml
+          echo "Cargo version set to: ${{ env.VERSION }}"
+
+      - name: Verify build (downloads native libs via build.rs)
+        run: |
+          cd bindings/rust
+          cargo build --release
+
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          cd bindings/rust
+          cargo publish --allow-dirty
+
+      - name: Tag release
+        run: |
+          TAG="rust-v${{ env.VERSION }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "$TAG"
+          git push origin "$TAG"
+          echo "Tagged: $TAG"
