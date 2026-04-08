@@ -1,0 +1,5 @@
+# Native libraries bundled by CI (not checked in)
+zerodev_aa/native/
+dist/
+*.egg-info/
+__pycache__/
