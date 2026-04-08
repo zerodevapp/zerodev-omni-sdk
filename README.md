@@ -28,7 +28,6 @@ zerodev-aa = "0.0.1-alpha.1"
 ```
 
 **Go** — requires building from source. See [Getting Started](#getting-started-from-source).
->>>>>>> 03292e6 (feat: Rust crates.io distribution with auto-download native libs)
 
 ## Quick Start
 
