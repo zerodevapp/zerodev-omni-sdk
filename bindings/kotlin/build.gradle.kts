@@ -3,6 +3,7 @@ plugins {
     kotlin("plugin.serialization") version "2.1.10"
     `maven-publish`
     signing
+    id("net.thebugmc.gradle.sonatype-central-portal-publisher") version "1.2.4"
 }
 
 group = "app.zerodev"
@@ -23,6 +24,7 @@ kotlin {
 
 repositories {
     mavenCentral()
+    gradlePluginPortal()
 }
 
 dependencies {
@@ -39,55 +41,34 @@ tasks.test {
     environment("E2E_PRIVATE_KEY", System.getenv("E2E_PRIVATE_KEY") ?: "")
 }
 
-publishing {
-    publications {
-        create<MavenPublication>("maven") {
-            from(components["java"])
+centralPortal {
+    username = System.getenv("OSSRH_USERNAME") ?: ""
+    password = System.getenv("OSSRH_PASSWORD") ?: ""
 
-            artifactId = "zerodev-aa"
+    pom {
+        name.set("ZeroDev AA SDK")
+        description.set("ERC-4337 smart account SDK for Kotlin/JVM — bundled native libraries, zero setup")
+        url.set("https://github.com/zerodevapp/zerodev-omni-sdk")
 
-            pom {
-                name.set("ZeroDev AA SDK")
-                description.set("ERC-4337 smart account SDK for Kotlin/JVM — bundled native libraries, zero setup")
-                url.set("https://github.com/zerodevapp/zerodev-omni-sdk")
-
-                licenses {
-                    license {
-                        name.set("MIT License")
-                        url.set("https://opensource.org/licenses/MIT")
-                    }
-                }
-
-                developers {
-                    developer {
-                        id.set("zerodev")
-                        name.set("ZeroDev")
-                        url.set("https://zerodev.app")
-                    }
-                }
-
-                scm {
-                    url.set("https://github.com/zerodevapp/zerodev-omni-sdk")
-                    connection.set("scm:git:git://github.com/zerodevapp/zerodev-omni-sdk.git")
-                    developerConnection.set("scm:git:ssh://github.com/zerodevapp/zerodev-omni-sdk.git")
-                }
+        licenses {
+            license {
+                name.set("MIT License")
+                url.set("https://opensource.org/licenses/MIT")
             }
         }
-    }
 
-    repositories {
-        maven {
-            name = "OSSRH"
-            url = uri(
-                if (version.toString().endsWith("-SNAPSHOT"))
-                    "https://s01.oss.sonatype.org/content/repositories/snapshots/"
-                else
-                    "https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/"
-            )
-            credentials {
-                username = System.getenv("OSSRH_USERNAME") ?: ""
-                password = System.getenv("OSSRH_PASSWORD") ?: ""
+        developers {
+            developer {
+                id.set("zerodev")
+                name.set("ZeroDev")
+                url.set("https://zerodev.app")
             }
+        }
+
+        scm {
+            url.set("https://github.com/zerodevapp/zerodev-omni-sdk")
+            connection.set("scm:git:git://github.com/zerodevapp/zerodev-omni-sdk.git")
+            developerConnection.set("scm:git:ssh://github.com/zerodevapp/zerodev-omni-sdk.git")
         }
     }
 }
@@ -97,6 +78,6 @@ signing {
     val signingPassword = System.getenv("GPG_PASSPHRASE")
     if (signingKey != null && signingPassword != null) {
         useInMemoryPgpKeys(signingKey, signingPassword)
-        sign(publishing.publications["maven"])
+        sign(publishing.publications)
     }
 }
