@@ -4,7 +4,78 @@ on:
   workflow_dispatch: {}
 
 jobs:
+  native-libs:
+    runs-on: macos-14
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Determine version
+        run: |
+          BASE=$(cat VERSION | tr -d '[:space:]')
+          echo "VERSION=$BASE" >> $GITHUB_ENV
+          echo "TAG=native-v$BASE" >> $GITHUB_ENV
+
+      - name: Install Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: '0.15.2'
+
+      - name: Switch to CommandLineTools
+        run: sudo xcode-select -s /Library/Developer/CommandLineTools
+
+      - name: Cross-compile and package
+        run: |
+          for target in aarch64-macos x86_64-macos x86_64-linux-gnu aarch64-linux-gnu; do
+            echo "=== Building $target ==="
+            rm -rf zig-out
+            zig build -Doptimize=ReleaseFast -Dtarget=$target -Dstatic-only=true
+
+            case "$target" in
+              aarch64-macos) tag="aarch64-macos" ;;
+              x86_64-macos)  tag="x86_64-macos" ;;
+              x86_64-linux-gnu)  tag="x86_64-linux" ;;
+              aarch64-linux-gnu) tag="aarch64-linux" ;;
+            esac
+
+            if [[ "$target" == *macos* ]]; then
+              for lib in libzerodev_aa.a libsecp256k1.a; do
+                tmpdir=$(mktemp -d)
+                cd "$tmpdir"
+                ar x "$GITHUB_WORKSPACE/zig-out/lib/$lib"
+                chmod 644 *.o
+                libtool -static -o "$GITHUB_WORKSPACE/zig-out/lib/$lib" *.o 2>/dev/null
+                cd "$GITHUB_WORKSPACE"
+                rm -rf "$tmpdir"
+              done
+            fi
+
+            mkdir -p dist
+            tar czf "dist/zerodev-aa-native-${tag}.tar.gz" \
+              -C zig-out/lib libzerodev_aa.a libsecp256k1.a \
+              -C "$GITHUB_WORKSPACE" include/aa.h
+          done
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ env.TAG }}"
+          gh release delete "$TAG" --yes 2>/dev/null || true
+          git push --delete origin "$TAG" 2>/dev/null || true
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "$TAG"
+          git push origin "$TAG"
+
+          gh release create "$TAG" dist/*.tar.gz \
+            --title "Native libraries v${{ env.VERSION }}" \
+            --notes "Prebuilt static libraries for Rust binding."
+
   publish:
+    needs: native-libs
     runs-on: macos-14
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
