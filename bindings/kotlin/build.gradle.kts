@@ -1,6 +1,8 @@
 plugins {
-    kotlin("jvm") version "2.1.10"
-    kotlin("plugin.serialization") version "2.1.10"
+    kotlin("jvm") version "2.1.20"
+    kotlin("android") version "2.1.20" apply false
+    kotlin("plugin.serialization") version "2.1.20"
+    id("com.android.library") version "8.9.0" apply false
     `maven-publish`
     signing
     id("net.thebugmc.gradle.sonatype-central-portal-publisher") version "1.2.4"
@@ -8,6 +10,16 @@ plugins {
 
 group = "app.zerodev"
 version = "0.0.1-alpha"
+
+subprojects {
+    group = rootProject.group
+    version = rootProject.version
+
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
 
 java {
     sourceCompatibility = JavaVersion.VERSION_21
@@ -31,6 +43,15 @@ repositories {
 dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     testImplementation(kotlin("test"))
+}
+
+publishing {
+    publications {
+        create<MavenPublication>("mavenJava") {
+            artifactId = "zerodev-aa-jvm"
+            from(components["java"])
+        }
+    }
 }
 
 tasks.test {

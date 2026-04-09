@@ -151,15 +151,15 @@ jobs:
         run: |
           cd bindings/kotlin
           sed -i '' "s/version = \".*\"/version = \"${{ env.VERSION }}\"/" build.gradle.kts
-          sed -i '' "s/version = \".*\"/version = \"${{ env.VERSION }}\"/" android/build.gradle.kts
           echo "Version set to: ${{ env.VERSION }}"
 
-      - name: Build and verify JAR
+      - name: Build and verify JVM JAR
         run: |
           cd bindings/kotlin
-          ./gradlew clean build -x test
+          # Build root (JVM) only — exclude android subproject
+          ./gradlew clean :build -x test
           echo "=== JAR contents (native libs) ==="
-          jar tf build/libs/zerodev-aa-${{ env.VERSION }}.jar | grep -E "(darwin|linux|android)" || true
+          jar tf build/libs/zerodev-aa-jvm-${{ env.VERSION }}.jar | grep -E "(darwin|linux|android)" || true
 
       - name: Publish JVM JAR to Maven Central
         env:
@@ -169,9 +169,9 @@ jobs:
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
           cd bindings/kotlin
-          ./gradlew publishToCentralPortal
+          ./gradlew :publishToCentralPortal
 
-      - name: Publish Android AAR to Maven Central
+      - name: Build and publish Android AAR to Maven Central
         env:
           OSSRH_USERNAME: ${{ secrets.OSSRH_USERNAME }}
           OSSRH_PASSWORD: ${{ secrets.OSSRH_PASSWORD }}
@@ -179,7 +179,7 @@ jobs:
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
           cd bindings/kotlin
-          ./gradlew :android:publishToCentralPortal
+          ./gradlew :android:assembleRelease :android:publishToCentralPortal
 
       - name: Tag release
         run: |

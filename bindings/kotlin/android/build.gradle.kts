@@ -1,14 +1,11 @@
 plugins {
-    id("com.android.library") version "8.7.3"
+    id("com.android.library")
     kotlin("android")
     kotlin("plugin.serialization")
     `maven-publish`
     signing
-    id("net.thebugmc.gradle.sonatype-central-portal-publisher") version "1.2.4"
+    id("net.thebugmc.gradle.sonatype-central-portal-publisher")
 }
-
-group = "app.zerodev"
-version = "0.0.1-alpha"
 
 android {
     namespace = "dev.zerodev.aa"
@@ -23,17 +20,40 @@ android {
         targetCompatibility = JavaVersion.VERSION_21
     }
 
-    kotlinOptions {
-        jvmTarget = "21"
+    sourceSets["main"].apply {
+        java.srcDir("../src/main/kotlin")
+        manifest.srcFile("src/main/AndroidManifest.xml")
+        jniLibs.srcDir("src/main/jniLibs")
     }
 
-    // Native .so files go here — CI populates jniLibs/
-    sourceSets["main"].jniLibs.srcDirs("src/main/jniLibs")
+    publishing {
+        singleVariant("release") {
+            withSourcesJar()
+            withJavadocJar()
+        }
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_21)
+    }
 }
 
 dependencies {
-    // Re-export the core Kotlin module (all public API comes from here)
-    api(project(":"))
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+    testImplementation(kotlin("test"))
+}
+
+publishing {
+    publications {
+        register<MavenPublication>("release") {
+            artifactId = "zerodev-aa"
+            afterEvaluate {
+                from(components["release"])
+            }
+        }
+    }
 }
 
 centralPortal {
