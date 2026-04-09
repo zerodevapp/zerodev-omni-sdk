@@ -4,41 +4,23 @@ ERC-4337 smart account SDK written in Zig, designed for multi-language consumpti
 
 One Zig core → Go, Rust, Swift, Kotlin, Python, C.
 
-## Install
+## Languages
 
-**Swift (SPM):**
+- [Swift (iOS + macOS)](#swift-ios--macos)
+- [Kotlin (Android + JVM)](#kotlin-android--jvm)
+- [Go](#go)
+- [Rust](#rust)
+- [Python](#python)
+- [C](#c)
+
+## Swift (iOS + macOS)
+
+### Install
 ```swift
 .package(url: "https://github.com/zerodevapp/zerodev-omni-sdk.git", from: "0.0.1-alpha")
 ```
 
-**Kotlin/Android (Gradle):**
-```kotlin
-implementation("app.zerodev:zerodev-aa:0.0.1-alpha.5")
-```
-Desktop JVM: `implementation("app.zerodev:zerodev-aa-jvm:0.0.1-alpha.5")`
-
-**Python (pip):**
-```bash
-pip install zerodev-aa
-```
-
-**Rust (Cargo):**
-```toml
-[dependencies]
-zerodev-aa = "0.0.1-alpha.1"
-```
-
-**Go:**
-```bash
-go get github.com/zerodevapp/zerodev-omni-sdk/bindings/go
-```
-
-**C** — requires building from source. See [Getting Started](#getting-started-from-source).
-
-## Quick Start
-
-### Swift (iOS + macOS)
-
+### Usage
 ```swift
 import ZeroDevAA
 
@@ -50,15 +32,61 @@ let hash = try await account.sendUserOp(calls: [Call(target: addr)])
 let receipt = try await account.waitForUserOperationReceipt(useropHash: hash)
 ```
 
-For Privy / WalletConnect (async wallet providers):
+### Custom Signers
 ```swift
+// Privy / WalletConnect (async wallet providers)
 let signer = try Signer.async(myAsyncSignerImpl)  // AsyncSignerProtocol
 ```
 
 > **Full example:** [omni-sdk-swift-example](https://github.com/zerodevapp/omni-sdk-swift-example) — SwiftUI app with Privy embedded wallet + gasless transactions
 
-### Go
+---
 
+## Kotlin (Android + JVM)
+
+### Install
+```kotlin
+// Android
+implementation("app.zerodev:zerodev-aa:0.0.1-alpha.5")
+
+// Desktop JVM
+implementation("app.zerodev:zerodev-aa-jvm:0.0.1-alpha.5")
+```
+
+### Usage
+```kotlin
+Context.create(projectId, chainId = 11155111).use { ctx ->
+    Signer.local(privateKey).use { signer ->
+        ctx.newAccount(signer, KernelVersion.V3_3).use { account ->
+            val hash = account.sendUserOp(listOf(Call(target = addr)))
+            val receipt = account.waitForUserOperationReceipt(hash)
+        }
+    }
+}
+```
+
+### Custom Signers
+```kotlin
+val signer = Signer.custom(object : SignerImpl {
+    override fun signHash(hash: ByteArray) = // ...
+    override fun signMessage(msg: ByteArray) = // ...
+    override fun signTypedDataHash(hash: ByteArray) = // ...
+    override fun getAddress() = // ...
+})
+```
+
+> **Full example:** [omni-sdk-android-example](https://github.com/zerodevapp/omni-sdk-android-example) — Jetpack Compose app with Privy embedded wallet + gasless transactions
+
+---
+
+## Go
+
+### Install
+```bash
+go get github.com/zerodevapp/zerodev-omni-sdk/bindings/go
+```
+
+### Usage
 ```go
 ctx, _ := aa.NewContext(projectID, "", "", 11155111, aa.GasZeroDev, aa.PaymasterZeroDev)
 defer ctx.Close()
@@ -73,8 +101,27 @@ hash, _ := account.SendUserOp([]aa.Call{{Target: recipientAddr}})
 receipt, _ := account.WaitForUserOperationReceipt(hash, 0, 0)
 ```
 
-### Rust
+### Custom Signers
+```go
+signer, _ := aa.CustomSigner(aa.SignerFuncs{
+    SignHash:           func(hash [32]byte) ([65]byte, error) { /* ... */ },
+    SignMessage:        func(msg []byte) ([65]byte, error) { /* ... */ },
+    SignTypedDataHash:  func(hash [32]byte) ([65]byte, error) { /* ... */ },
+    GetAddress:         func() [20]byte { /* ... */ },
+})
+```
 
+---
+
+## Rust
+
+### Install
+```toml
+[dependencies]
+zerodev-aa = "0.0.1-alpha.1"
+```
+
+### Usage
 ```rust
 use zerodev_aa::{Context, Signer, KernelVersion, GasMiddleware, PaymasterMiddleware, Call};
 
@@ -86,23 +133,21 @@ let hash = account.send_user_op(&[Call { target: addr, value: [0u8; 32], calldat
 let receipt = account.wait_for_user_operation_receipt(&hash, 0, 0)?;
 ```
 
-### Kotlin
-
-```kotlin
-Context.create(projectId, chainId = 11155111).use { ctx ->
-    Signer.local(privateKey).use { signer ->
-        ctx.newAccount(signer, KernelVersion.V3_3).use { account ->
-            val hash = account.sendUserOp(listOf(Call(target = addr)))
-            val receipt = account.waitForUserOperationReceipt(hash)
-        }
-    }
-}
+### Custom Signers
+```rust
+let signer = Signer::custom(MySignerImpl)?;  // implements SignerImpl trait
 ```
 
-> **Full example:** [omni-sdk-android-example](https://github.com/zerodevapp/omni-sdk-android-example) — Jetpack Compose app with Privy embedded wallet + gasless transactions
+---
 
-### Python
+## Python
 
+### Install
+```bash
+pip install zerodev-aa
+```
+
+### Usage
 ```python
 from zerodev_aa import Context, Signer, Call, KernelVersion
 
@@ -113,8 +158,25 @@ with Context(project_id, chain_id=11155111) as ctx:
             receipt = account.wait_for_receipt(hash)
 ```
 
-### C
+### Custom Signers
+```python
+class MySigner:
+    def sign_hash(self, hash: bytes) -> bytes: ...
+    def sign_message(self, msg: bytes) -> bytes: ...
+    def sign_typed_data_hash(self, hash: bytes) -> bytes: ...
+    def get_address(self) -> bytes: ...
 
+signer = Signer.custom(MySigner())
+```
+
+---
+
+## C
+
+### Install
+Build from source (see [Building from source](#building-from-source)).
+
+### Usage
 ```c
 #include "aa.h"
 
@@ -138,7 +200,11 @@ aa_signer_destroy(signer);
 aa_context_destroy(ctx);
 ```
 
+---
+
 ## Signer Types
+
+All languages support the same signer types:
 
 | Constructor | Use case |
 |---|---|
@@ -148,7 +214,7 @@ aa_context_destroy(ctx);
 | `Signer.custom(impl)` | Custom signing (Privy, HSM, MPC) |
 | `Signer.async(impl)` | Async signing — Swift only (iOS wallet providers) |
 
-## Getting Started (from source)
+## Building from source
 
 For C — or if you want to build any binding locally:
 
@@ -166,29 +232,40 @@ cd zerodev-omni-sdk
 make build
 ```
 
-### Use as local dependency
+### Local dependency overrides
 
-**Go:**
+<details>
+<summary>Go</summary>
+
 ```bash
 go mod edit -require github.com/zerodevapp/zerodev-omni-sdk/bindings/go@v0.0.0
 go mod edit -replace github.com/zerodevapp/zerodev-omni-sdk/bindings/go=/path/to/zerodev-omni-sdk/bindings/go
 ```
+</details>
 
-**Rust:**
+<details>
+<summary>Rust</summary>
+
 ```toml
 [dependencies]
 zerodev-aa = { path = "/path/to/zerodev-omni-sdk/bindings/rust" }
 ```
+</details>
 
-**Swift (local):**
+<details>
+<summary>Swift</summary>
+
 ```bash
 make build-xcframework
 ```
 ```swift
 .package(path: "/path/to/zerodev-omni-sdk/bindings/swift")
 ```
+</details>
 
-**Kotlin:**
+<details>
+<summary>Kotlin</summary>
+
 ```kotlin
 // settings.gradle.kts
 includeBuild("/path/to/zerodev-omni-sdk/bindings/kotlin") {
@@ -197,27 +274,25 @@ includeBuild("/path/to/zerodev-omni-sdk/bindings/kotlin") {
     }
 }
 ```
+</details>
 
-**Python:**
+<details>
+<summary>Python</summary>
+
 ```bash
 PYTHONPATH=/path/to/zerodev-omni-sdk/bindings/python
 ZERODEV_SDK_ROOT=/path/to/zerodev-omni-sdk
 ```
+</details>
 
 ### Examples
 
 ```bash
-# Gasless transfer (Sepolia):
 export ZERODEV_PROJECT_ID=your-project-id
 cd examples/gasless-transfer/go && make run
-
-# Privy signer:
-export PRIVY_APP_ID=your-privy-app-id
-export PRIVY_APP_SECRET=your-privy-app-secret
-cd examples/privy-signer/go && make run
 ```
 
-See [`examples/README.md`](examples/README.md) for all examples (Go, Rust, Swift, Kotlin, Python).
+See [`examples/README.md`](examples/README.md) for all examples.
 
 ## Architecture
 
@@ -237,13 +312,13 @@ bindings/
 └── python/         # Python (ctypes)
 ```
 
-## Bindings
+## Package Registry Links
 
-| Language | Package | iOS/Android | Async | Custom Signer |
-|----------|---------|-------------|-------|---------------|
-| Swift | [SPM](https://github.com/zerodevapp/zerodev-omni-sdk) | iOS + macOS | Yes (`async/await`) | `SignerProtocol` / `AsyncSignerProtocol` |
-| Kotlin | [Maven Central](https://central.sonatype.com/artifact/app.zerodev/zerodev-aa) | Android + JVM | — | `SignerImpl` interface |
-| Go | [Go module](https://pkg.go.dev/github.com/zerodevapp/zerodev-omni-sdk/bindings/go/aa) | — | — | `SignerFuncs` |
-| Rust | [crates.io](https://crates.io/crates/zerodev-aa) | — | — | `SignerImpl` trait |
-| Python | [PyPI](https://pypi.org/project/zerodev-aa/) | — | — | `SignerImpl` protocol |
-| C | `include/aa.h` | — | — | `aa_signer_vtable` |
+| Language | Package | Platform |
+|----------|---------|----------|
+| Swift | [SPM](https://github.com/zerodevapp/zerodev-omni-sdk) | iOS + macOS |
+| Kotlin | [Maven Central](https://central.sonatype.com/artifact/app.zerodev/zerodev-aa) | Android + JVM |
+| Go | [Go module](https://pkg.go.dev/github.com/zerodevapp/zerodev-omni-sdk/bindings/go/aa) | All |
+| Rust | [crates.io](https://crates.io/crates/zerodev-aa) | All |
+| Python | [PyPI](https://pypi.org/project/zerodev-aa/) | macOS + Linux |
+| C | `include/aa.h` | All |
