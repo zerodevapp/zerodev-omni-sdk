@@ -6,8 +6,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * Loads the native zerodev_aa library.
  *
- * - **Android**: System.loadLibrary from APK's jniLibs/
- * - **Desktop JVM**: Extracts from JAR resources to a temp file, then System.load
+ * - **Android**: Extracts from JAR resources to app cache, then System.load
+ * - **Desktop JVM**: Extracts from JAR resources to temp dir, then System.load
+ * - Falls back to System.loadLibrary if bundled resources aren't found
  */
 internal object NativeLoader {
     private val loaded = AtomicBoolean(false)
@@ -17,10 +18,10 @@ internal object NativeLoader {
         if (loaded.getAndSet(true)) return
 
         try {
-            // Works on Android (loads from APK) and desktop if lib is on java.library.path
+            // Try system path first (works if lib is in jniLibs/ on Android or java.library.path on JVM)
             System.loadLibrary("zerodev_aa")
         } catch (_: UnsatisfiedLinkError) {
-            // Desktop JVM fallback: extract from JAR resources
+            // Extract from JAR resources
             loadFromResources()
         }
     }
@@ -44,10 +45,28 @@ internal object NativeLoader {
         System.load(tempFile.absolutePath)
     }
 
+    private val isAndroid: Boolean by lazy {
+        try {
+            Class.forName("android.os.Build")
+            true
+        } catch (_: ClassNotFoundException) {
+            false
+        }
+    }
+
     private fun platformLibPath(): Pair<String, String> {
-        val os = System.getProperty("os.name").lowercase()
         val arch = System.getProperty("os.arch").lowercase()
 
+        if (isAndroid) {
+            val dir = when {
+                arch.contains("aarch64") || arch.contains("arm64") -> "android-aarch64"
+                arch.contains("x86_64") || arch.contains("amd64") -> "android-x86-64"
+                else -> throw UnsatisfiedLinkError("Unsupported Android arch: $arch")
+            }
+            return dir to "libzerodev_aa.so"
+        }
+
+        val os = System.getProperty("os.name").lowercase()
         val dir = when {
             os.contains("mac") || os.contains("darwin") -> when {
                 arch.contains("aarch64") || arch.contains("arm64") -> "darwin-aarch64"
