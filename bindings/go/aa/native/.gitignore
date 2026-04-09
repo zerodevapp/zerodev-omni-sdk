@@ -1,0 +1,3 @@
+# Native libs are committed by CI, not locally
+# This .gitignore is overridden by `git add -f` in CI
+*.a
