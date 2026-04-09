@@ -129,7 +129,7 @@ jobs:
             # Step 2: NDK clang compiles JNI bridge + links everything into .so
             mkdir -p "$RESOURCE_DIR/$res_dir"
             "$TOOLCHAIN/$ndk_cc" -shared -o "$RESOURCE_DIR/$res_dir/libzerodev_aa.so" \
-              -I"$JNI_INC" -I"$JNI_INC/linux" -Iinclude \
+              -I"$JNI_INC" -I"$JNI_INC/darwin" -I"$JNI_INC/linux" -Iinclude \
               "$JNI_SRC" \
               -Wl,--whole-archive zig-out/lib/libzerodev_aa.a zig-out/lib/libsecp256k1.a -Wl,--no-whole-archive \
               -lc -lm -ldl
