@@ -1,8 +1,6 @@
 package aa
 
 /*
-#cgo CFLAGS: -I${SRCDIR}/../../../include
-#cgo LDFLAGS: ${SRCDIR}/../../../zig-out/lib/libzerodev_aa.a ${SRCDIR}/../../../zig-out/lib/libsecp256k1.a -lc
 #include <stdlib.h>
 #include <string.h>
 #include "aa.h"

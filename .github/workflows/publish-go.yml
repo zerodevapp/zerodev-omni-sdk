@@ -1,0 +1,103 @@
+name: Publish Go module
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  publish:
+    runs-on: macos-14
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Determine version
+        run: |
+          BASE=$(cat VERSION | tr -d '[:space:]')
+
+          git fetch --tags
+          LATEST=$(git tag -l "go-v${BASE}.*" | sort -t. -k5 -n | tail -1)
+          if [ -n "$LATEST" ]; then
+            BUILD=$(echo "$LATEST" | grep -o '[0-9]*$')
+            BUILD=$((BUILD + 1))
+          else
+            BUILD=1
+          fi
+
+          VERSION="${BASE}.${BUILD}"
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          # Go module versions: v0.0.1-alpha.1
+          echo "GO_TAG=bindings/go/v${VERSION}" >> $GITHUB_ENV
+          echo "Building Go release: v$VERSION"
+
+      - name: Install Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: '0.15.2'
+
+      - name: Switch to CommandLineTools
+        run: sudo xcode-select -s /Library/Developer/CommandLineTools
+
+      - name: Cross-compile and bundle native libraries
+        run: |
+          NATIVE_DIR=bindings/go/aa/native
+
+          # Copy header
+          mkdir -p "$NATIVE_DIR/include"
+          cp include/aa.h "$NATIVE_DIR/include/"
+
+          for target_info in "aarch64-macos:darwin_arm64" "x86_64-macos:darwin_amd64" "x86_64-linux-gnu:linux_amd64" "aarch64-linux-gnu:linux_arm64"; do
+            IFS=: read -r zig_target go_dir <<< "$target_info"
+            echo "=== Building $zig_target → $go_dir ==="
+
+            rm -rf zig-out
+            zig build -Doptimize=ReleaseFast -Dtarget=$zig_target -Dstatic-only=true
+
+            # Repack for macOS linker compatibility
+            if [[ "$zig_target" == *macos* ]]; then
+              for lib in libzerodev_aa.a libsecp256k1.a; do
+                tmpdir=$(mktemp -d)
+                cd "$tmpdir"
+                ar x "$GITHUB_WORKSPACE/zig-out/lib/$lib"
+                chmod 644 *.o
+                libtool -static -o "$GITHUB_WORKSPACE/zig-out/lib/$lib" *.o 2>/dev/null
+                cd "$GITHUB_WORKSPACE"
+                rm -rf "$tmpdir"
+              done
+            fi
+
+            mkdir -p "$NATIVE_DIR/$go_dir"
+            cp zig-out/lib/libzerodev_aa.a "$NATIVE_DIR/$go_dir/"
+            cp zig-out/lib/libsecp256k1.a "$NATIVE_DIR/$go_dir/"
+          done
+
+          echo "=== Bundled native libraries ==="
+          find "$NATIVE_DIR" -name "*.a" -exec ls -lh {} \;
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Verify Go build
+        run: |
+          cd bindings/go
+          CGO_ENABLED=1 go build ./aa/
+
+      - name: Commit bundled native libs and tag
+        run: |
+          TAG="${{ env.GO_TAG }}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add -f bindings/go/aa/native/
+          git commit -m "chore(go): bundle native libs for v${{ env.VERSION }} [skip ci]"
+          git push origin main
+
+          git tag "$TAG"
+          git push origin "$TAG"
+          echo "Tagged: $TAG"
+          echo ""
+          echo "Go consumers can now:"
+          echo "  go get github.com/${{ github.repository }}/bindings/go@$TAG"

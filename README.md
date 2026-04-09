@@ -27,7 +27,10 @@ pip install zerodev-aa
 zerodev-aa = "0.0.1-alpha.1"
 ```
 
-**Go** — requires building from source. See [Getting Started](#getting-started-from-source).
+**Go:**
+```bash
+go get github.com/zerodevapp/zerodev-omni-sdk/bindings/go
+```
 
 ## Quick Start
 
