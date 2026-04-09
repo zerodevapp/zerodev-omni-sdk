@@ -8,32 +8,47 @@ import sys
 from pathlib import Path
 
 
+def _platform_dir() -> str:
+    """Return the platform subdirectory name for bundled native libs."""
+    system = platform.system()
+    machine = platform.machine().lower()
+    if system == "Darwin":
+        return "darwin-aarch64" if machine in ("arm64", "aarch64") else "darwin-x86-64"
+    else:
+        return "linux-aarch64" if machine in ("arm64", "aarch64") else "linux-x86-64"
+
+
 def _find_lib() -> str:
     """Find libzerodev_aa dynamic library."""
     ext = ".dylib" if platform.system() == "Darwin" else ".so"
     name = f"libzerodev_aa{ext}"
 
-    # 1. ZERODEV_SDK_ROOT env var
+    # 1. Bundled inside package (pip install / wheel)
+    pkg_dir = Path(__file__).resolve().parent
+    bundled = pkg_dir / "native" / _platform_dir() / name
+    if bundled.exists():
+        return str(bundled)
+
+    # 2. ZERODEV_SDK_ROOT env var
     sdk_root = os.environ.get("ZERODEV_SDK_ROOT")
     if sdk_root:
         p = Path(sdk_root) / "zig-out" / "lib" / name
         if p.exists():
             return str(p)
 
-    # 2. Relative to this package (../../zig-out/lib from bindings/python/)
-    pkg_dir = Path(__file__).resolve().parent
+    # 3. Relative to this package (../../zig-out/lib from bindings/python/)
     for up in [pkg_dir.parent.parent / "zig-out" / "lib" / name,
                pkg_dir.parent.parent.parent / "zig-out" / "lib" / name]:
         if up.exists():
             return str(up)
 
-    # 3. System library path
+    # 4. System library path
     found = ctypes.util.find_library("zerodev_aa")
     if found:
         return found
 
     raise OSError(
-        f"Cannot find {name}. Set ZERODEV_SDK_ROOT or run 'make build' from the SDK root."
+        f"Cannot find {name}. Install via pip or set ZERODEV_SDK_ROOT."
     )
 
 

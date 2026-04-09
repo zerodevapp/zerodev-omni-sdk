@@ -1,0 +1,112 @@
+name: Publish Python to PyPI
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  publish:
+    runs-on: macos-14
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Determine version
+        run: |
+          BASE=$(cat VERSION | tr -d '[:space:]')
+
+          git fetch --tags
+          LATEST=$(git tag -l "python-v${BASE}.*" | sort -t. -k5 -n | tail -1)
+          if [ -n "$LATEST" ]; then
+            BUILD=$(echo "$LATEST" | grep -o '[0-9]*$')
+            BUILD=$((BUILD + 1))
+          else
+            BUILD=1
+          fi
+
+          VERSION="${BASE}.${BUILD}"
+          # PyPI version format: 0.0.1a1 (not 0.0.1-alpha.1)
+          PYPI_VERSION=$(echo "$VERSION" | sed 's/-alpha\./a/')
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "PYPI_VERSION=$PYPI_VERSION" >> $GITHUB_ENV
+          echo "Building Python release: $PYPI_VERSION"
+
+      - name: Install Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: '0.15.2'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python build tools
+        run: pip install build twine
+
+      - name: Switch to CommandLineTools
+        run: sudo xcode-select -s /Library/Developer/CommandLineTools
+
+      - name: Cross-compile native libraries
+        run: |
+          NATIVE_DIR=bindings/python/zerodev_aa/native
+
+          # macOS arm64
+          echo "=== Building aarch64-macos ==="
+          rm -rf zig-out
+          zig build -Doptimize=ReleaseFast -Dtarget=aarch64-macos
+          mkdir -p "$NATIVE_DIR/darwin-aarch64"
+          cp zig-out/lib/libzerodev_aa.dylib "$NATIVE_DIR/darwin-aarch64/"
+
+          # macOS x86_64
+          echo "=== Building x86_64-macos ==="
+          rm -rf zig-out
+          zig build -Doptimize=ReleaseFast -Dtarget=x86_64-macos
+          mkdir -p "$NATIVE_DIR/darwin-x86-64"
+          cp zig-out/lib/libzerodev_aa.dylib "$NATIVE_DIR/darwin-x86-64/"
+
+          # Linux x86_64
+          echo "=== Building x86_64-linux-gnu ==="
+          rm -rf zig-out
+          zig build -Doptimize=ReleaseFast -Dtarget=x86_64-linux-gnu
+          mkdir -p "$NATIVE_DIR/linux-x86-64"
+          cp zig-out/lib/libzerodev_aa.so "$NATIVE_DIR/linux-x86-64/"
+
+          # Linux arm64
+          echo "=== Building aarch64-linux-gnu ==="
+          rm -rf zig-out
+          zig build -Doptimize=ReleaseFast -Dtarget=aarch64-linux-gnu
+          mkdir -p "$NATIVE_DIR/linux-aarch64"
+          cp zig-out/lib/libzerodev_aa.so "$NATIVE_DIR/linux-aarch64/"
+
+          echo "=== Bundled native libraries ==="
+          find "$NATIVE_DIR" -type f | sort
+
+      - name: Update version
+        run: |
+          cd bindings/python
+          sed -i '' "s/version = \".*\"/version = \"${{ env.PYPI_VERSION }}\"/" pyproject.toml
+
+      - name: Build wheel and sdist
+        run: |
+          cd bindings/python
+          python -m build
+          echo "=== Built packages ==="
+          ls -la dist/
+
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          cd bindings/python
+          twine upload dist/*
+
+      - name: Tag release
+        run: |
+          TAG="python-v${{ env.VERSION }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "$TAG"
+          git push origin "$TAG"
+          echo "Tagged: $TAG"

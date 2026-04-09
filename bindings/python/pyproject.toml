@@ -1,9 +1,28 @@
 [project]
 name = "zerodev-aa"
-version = "0.1.0"
-description = "ZeroDev ERC-4337 smart account SDK"
+version = "0.0.1a1"
+description = "ERC-4337 smart account SDK for Python — bundled native libraries, zero setup"
 requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "ZeroDev", email = "sahil@zerodev.app" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+]
+
+[project.urls]
+Homepage = "https://zerodev.app"
+Repository = "https://github.com/zerodevapp/zerodev-omni-sdk"
 
 [build-system]
-requires = ["setuptools"]
+requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["zerodev_aa*"]
+
+[tool.setuptools.package-data]
+"zerodev_aa" = ["native/**/*.dylib", "native/**/*.so"]

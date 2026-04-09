@@ -16,7 +16,12 @@ One Zig core → Go, Rust, Swift, Kotlin, Python, C.
 implementation("app.zerodev:zerodev-aa:0.0.1-alpha.1")
 ```
 
-**Go, Rust, Python** — requires building from source. See [Getting Started](#getting-started-from-source).
+**Python (pip):**
+```bash
+pip install zerodev-aa
+```
+
+**Go, Rust** — requires building from source. See [Getting Started](#getting-started-from-source).
 
 ## Quick Start
 
