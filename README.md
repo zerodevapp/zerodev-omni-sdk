@@ -6,16 +6,16 @@ One Zig core → Go, Rust, Swift, Kotlin, Python, C.
 
 ## Install
 
-**Swift (SPM) — no Zig required:**
+**Swift (SPM):**
 ```swift
 .package(url: "https://github.com/zerodevapp/zerodev-omni-sdk.git", from: "0.0.1-alpha")
 ```
 
 **Kotlin/Android (Gradle):**
 ```kotlin
-implementation("app.zerodev:zerodev-aa:0.0.1-alpha.1")  // Android
-implementation("app.zerodev:zerodev-aa-jvm:0.0.1-alpha.1")  // Desktop JVM
+implementation("app.zerodev:zerodev-aa:0.0.1-alpha.5")
 ```
+Desktop JVM: `implementation("app.zerodev:zerodev-aa-jvm:0.0.1-alpha.5")`
 
 **Python (pip):**
 ```bash
@@ -32,6 +32,8 @@ zerodev-aa = "0.0.1-alpha.1"
 ```bash
 go get github.com/zerodevapp/zerodev-omni-sdk/bindings/go
 ```
+
+**C** — requires building from source. See [Getting Started](#getting-started-from-source).
 
 ## Quick Start
 
@@ -97,6 +99,8 @@ Context.create(projectId, chainId = 11155111).use { ctx ->
 }
 ```
 
+> **Full example:** [omni-sdk-android-example](https://github.com/zerodevapp/omni-sdk-android-example) — Jetpack Compose app with Privy embedded wallet + gasless transactions
+
 ### Python
 
 ```python
@@ -146,7 +150,7 @@ aa_context_destroy(ctx);
 
 ## Getting Started (from source)
 
-For Go, Rust, Kotlin, Python — or if you want to build the Swift binding locally:
+For C — or if you want to build any binding locally:
 
 ### Prerequisites
 
@@ -189,7 +193,7 @@ make build-xcframework
 // settings.gradle.kts
 includeBuild("/path/to/zerodev-omni-sdk/bindings/kotlin") {
     dependencySubstitution {
-        substitute(module("dev.zerodev:zerodev-aa")).using(project(":"))
+        substitute(module("app.zerodev:zerodev-aa")).using(project(":"))
     }
 }
 ```
@@ -229,17 +233,17 @@ bindings/
 ├── go/             # Go (cgo)
 ├── rust/           # Rust (auto Drop)
 ├── swift/          # Swift (SPM, xcframework, async/await)
-├── kotlin/         # Kotlin (JNA, AutoCloseable)
+├── kotlin/         # Kotlin/Android (JNI, AutoCloseable)
 └── python/         # Python (ctypes)
 ```
 
 ## Bindings
 
-| Language | Package | iOS | Async | Custom Signer |
-|----------|---------|-----|-------|---------------|
-| Swift | [SPM](https://github.com/zerodevapp/zerodev-omni-sdk) | Yes | Yes (`async/await`) | `SignerProtocol` / `AsyncSignerProtocol` |
-| Go | `bindings/go` | — | — | `SignerFuncs` |
-| Rust | `bindings/rust` | — | — | `SignerImpl` trait |
-| Kotlin | `bindings/kotlin` | Android TBD | — | `SignerImpl` interface |
-| Python | `bindings/python` | — | — | `SignerImpl` protocol |
+| Language | Package | iOS/Android | Async | Custom Signer |
+|----------|---------|-------------|-------|---------------|
+| Swift | [SPM](https://github.com/zerodevapp/zerodev-omni-sdk) | iOS + macOS | Yes (`async/await`) | `SignerProtocol` / `AsyncSignerProtocol` |
+| Kotlin | [Maven Central](https://central.sonatype.com/artifact/app.zerodev/zerodev-aa) | Android + JVM | — | `SignerImpl` interface |
+| Go | [Go module](https://pkg.go.dev/github.com/zerodevapp/zerodev-omni-sdk/bindings/go/aa) | — | — | `SignerFuncs` |
+| Rust | [crates.io](https://crates.io/crates/zerodev-aa) | — | — | `SignerImpl` trait |
+| Python | [PyPI](https://pypi.org/project/zerodev-aa/) | — | — | `SignerImpl` protocol |
 | C | `include/aa.h` | — | — | `aa_signer_vtable` |
