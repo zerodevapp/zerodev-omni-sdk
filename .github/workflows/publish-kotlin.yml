@@ -149,7 +149,7 @@ jobs:
       - name: Build and verify JAR
         run: |
           cd bindings/kotlin
-          ./gradlew build -x test
+          ./gradlew clean build -x test
           echo "=== JAR contents (native libs) ==="
           jar tf build/libs/zerodev-aa-${{ env.VERSION }}.jar | grep -E "(darwin|linux|android)" || true
 
