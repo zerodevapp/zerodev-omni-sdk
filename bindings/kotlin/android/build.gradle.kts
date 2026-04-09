@@ -1,5 +1,6 @@
 plugins {
-    kotlin("jvm") version "2.1.10"
+    id("com.android.library") version "8.7.3"
+    kotlin("android") version "2.1.10"
     kotlin("plugin.serialization") version "2.1.10"
     `maven-publish`
     signing
@@ -9,47 +10,40 @@ plugins {
 group = "app.zerodev"
 version = "0.0.1-alpha"
 
-java {
-    sourceCompatibility = JavaVersion.VERSION_21
-    targetCompatibility = JavaVersion.VERSION_21
-    withSourcesJar()
-    withJavadocJar()
-}
+android {
+    namespace = "dev.zerodev.aa"
+    compileSdk = 35
 
-kotlin {
-    compilerOptions {
-        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_21)
+    defaultConfig {
+        minSdk = 21
     }
-}
 
-repositories {
-    google()
-    mavenCentral()
-    gradlePluginPortal()
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_21
+        targetCompatibility = JavaVersion.VERSION_21
+    }
+
+    kotlinOptions {
+        jvmTarget = "21"
+    }
+
+    // Native .so files go here — CI populates jniLibs/
+    sourceSets["main"].jniLibs.srcDirs("src/main/jniLibs")
 }
 
 dependencies {
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
-    testImplementation(kotlin("test"))
-}
-
-tasks.test {
-    useJUnitPlatform()
-    // For local dev: add zig-out/lib to java.library.path so JNI can find the native lib
-    val libPath = file("${rootProject.projectDir}/../../zig-out/lib").absolutePath
-    systemProperty("java.library.path", libPath)
-    environment("ZERODEV_PROJECT_ID", System.getenv("ZERODEV_PROJECT_ID") ?: "")
-    environment("E2E_PRIVATE_KEY", System.getenv("E2E_PRIVATE_KEY") ?: "")
+    // Re-export the core Kotlin module (all public API comes from here)
+    api(project(":"))
 }
 
 centralPortal {
-    name = "zerodev-aa-jvm"
+    name = "zerodev-aa"
     username = System.getenv("OSSRH_USERNAME") ?: ""
     password = System.getenv("OSSRH_PASSWORD") ?: ""
 
     pom {
-        name.set("ZeroDev AA SDK (JVM)")
-        description.set("ERC-4337 smart account SDK for desktop JVM — bundled native libraries, zero setup")
+        name.set("ZeroDev AA SDK (Android)")
+        description.set("ERC-4337 smart account SDK for Android — bundled native libraries, zero setup")
         url.set("https://github.com/zerodevapp/zerodev-omni-sdk")
 
         licenses {

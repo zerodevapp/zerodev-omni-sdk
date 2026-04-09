@@ -11,9 +11,10 @@ One Zig core → Go, Rust, Swift, Kotlin, Python, C.
 .package(url: "https://github.com/zerodevapp/zerodev-omni-sdk.git", from: "0.0.1-alpha")
 ```
 
-**Kotlin (Gradle):**
+**Kotlin/Android (Gradle):**
 ```kotlin
-implementation("app.zerodev:zerodev-aa:0.0.1-alpha.1")
+implementation("app.zerodev:zerodev-aa:0.0.1-alpha.1")  // Android
+implementation("app.zerodev:zerodev-aa-jvm:0.0.1-alpha.1")  // Desktop JVM
 ```
 
 **Python (pip):**

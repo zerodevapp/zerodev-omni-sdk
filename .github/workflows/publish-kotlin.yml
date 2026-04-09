@@ -132,19 +132,27 @@ jobs:
               -I"$JNI_INC" -I"$JNI_INC/darwin" -I"$JNI_INC/linux" -Iinclude \
               "$JNI_SRC" \
               -Wl,--whole-archive zig-out/lib/libzerodev_aa.a zig-out/lib/libsecp256k1.a -Wl,--no-whole-archive \
+              -Wl,-z,max-page-size=16384 \
               -lc -lm -ldl
 
             echo "Built: $RESOURCE_DIR/$res_dir/libzerodev_aa.so"
           done
 
-          echo "=== Android native libraries ==="
-          find "$RESOURCE_DIR/android-*" -type f -name "libzerodev_aa.*" | sort
+          # Also copy to AAR jniLibs/ for Android consumers
+          JNILIBS_DIR=bindings/kotlin/android/src/main/jniLibs
+          mkdir -p "$JNILIBS_DIR/arm64-v8a" "$JNILIBS_DIR/x86_64"
+          cp "$RESOURCE_DIR/android-aarch64/libzerodev_aa.so" "$JNILIBS_DIR/arm64-v8a/"
+          cp "$RESOURCE_DIR/android-x86-64/libzerodev_aa.so" "$JNILIBS_DIR/x86_64/"
 
-      - name: Update version in build.gradle.kts
+          echo "=== Android native libraries ==="
+          find "$JNILIBS_DIR" -type f -name "libzerodev_aa.*" | sort
+
+      - name: Update version
         run: |
           cd bindings/kotlin
           sed -i '' "s/version = \".*\"/version = \"${{ env.VERSION }}\"/" build.gradle.kts
-          echo "Gradle version set to: ${{ env.VERSION }}"
+          sed -i '' "s/version = \".*\"/version = \"${{ env.VERSION }}\"/" android/build.gradle.kts
+          echo "Version set to: ${{ env.VERSION }}"
 
       - name: Build and verify JAR
         run: |
@@ -153,7 +161,7 @@ jobs:
           echo "=== JAR contents (native libs) ==="
           jar tf build/libs/zerodev-aa-${{ env.VERSION }}.jar | grep -E "(darwin|linux|android)" || true
 
-      - name: Publish to Maven Central
+      - name: Publish JVM JAR to Maven Central
         env:
           OSSRH_USERNAME: ${{ secrets.OSSRH_USERNAME }}
           OSSRH_PASSWORD: ${{ secrets.OSSRH_PASSWORD }}
@@ -162,6 +170,16 @@ jobs:
         run: |
           cd bindings/kotlin
           ./gradlew publishToCentralPortal
+
+      - name: Publish Android AAR to Maven Central
+        env:
+          OSSRH_USERNAME: ${{ secrets.OSSRH_USERNAME }}
+          OSSRH_PASSWORD: ${{ secrets.OSSRH_PASSWORD }}
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          cd bindings/kotlin
+          ./gradlew :android:publishToCentralPortal
 
       - name: Tag release
         run: |
