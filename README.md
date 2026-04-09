@@ -21,7 +21,13 @@ implementation("app.zerodev:zerodev-aa:0.0.1-alpha.1")
 pip install zerodev-aa
 ```
 
-**Go, Rust** — requires building from source. See [Getting Started](#getting-started-from-source).
+**Rust (Cargo):**
+```toml
+[dependencies]
+zerodev-aa = "0.0.1-alpha.1"
+```
+
+**Go** — requires building from source. See [Getting Started](#getting-started-from-source).
 
 ## Quick Start
 

@@ -1,10 +1,15 @@
 [package]
 name = "zerodev-aa"
-version = "0.1.0"
+version = "0.0.1-alpha.1"
 edition = "2021"
 rust-version = "1.70"
-description = "Idiomatic Rust bindings for the ZeroDev Account Abstraction SDK"
+description = "ERC-4337 smart account SDK for Rust — prebuilt native libraries, zero setup"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/zerodevapp/zerodev-omni-sdk"
+homepage = "https://zerodev.app"
+keywords = ["erc4337", "account-abstraction", "smart-account", "ethereum"]
+categories = ["cryptography::cryptocurrencies"]
+include = ["src/**/*", "build.rs", "Cargo.toml", "LICENSE*"]
 
 [lib]
 crate-type = ["lib"]
