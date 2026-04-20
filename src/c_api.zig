@@ -697,6 +697,55 @@ pub const CCall = extern struct {
     calldata_len: usize,
 };
 
+const AuthPrepError = error{ RpcFailed, SignFailed };
+
+/// For an EIP-7702 account, checks on-chain delegation status and signs the
+/// authorization tuple if needed. Returns null for non-7702 accounts OR when
+/// the delegation is already installed. On error, sets the last error string.
+fn prepareEip7702Authorization(
+    acc: *AccountImpl,
+    rpc: *Client,
+    a: std.mem.Allocator,
+    chain_id: u64,
+) AuthPrepError!?core.Authorization {
+    if (acc.mode != .eip7702) return null;
+
+    const installed = if (acc.delegation_installed) |cached| cached else blk: {
+        const code = rpc.getCode(acc.owner_address) catch |err| {
+            setLastError("eth_getCode for 7702 delegation check failed: {s}", .{@errorName(err)});
+            return AuthPrepError.RpcFailed;
+        };
+        defer a.free(code);
+        // Delegation marker: 0xef0100 || <20-byte-target>. Total 23 bytes.
+        const target = core.KERNEL_V3_3_DELEGATION_TARGET;
+        const is_installed = code.len >= 23 and
+            code[0] == 0xef and code[1] == 0x01 and code[2] == 0x00 and
+            std.mem.eql(u8, code[3..23], &target);
+        if (is_installed) acc.delegation_installed = true;
+        break :blk is_installed;
+    };
+
+    if (installed) return null;
+
+    const eoa_nonce = rpc.getTransactionCountAt(acc.owner_address, "pending") catch |err| {
+        setLastError("eth_getTransactionCount(pending) failed: {s}", .{@errorName(err)});
+        return AuthPrepError.RpcFailed;
+    };
+    const signer_iface = acc.signer.getSigner();
+    const signed = signer_iface.signAuthorization(chain_id, core.KERNEL_V3_3_DELEGATION_TARGET, eoa_nonce) catch |err| {
+        setLastError("signAuthorization failed: {s}", .{@errorName(err)});
+        return AuthPrepError.SignFailed;
+    };
+    return .{
+        .chain_id = signed.chain_id,
+        .address = signed.address,
+        .nonce = signed.nonce,
+        .y_parity = signed.y_parity,
+        .r = signed.r,
+        .s = signed.s,
+    };
+}
+
 pub export fn aa_userop_build(
     account: ?*AccountImpl,
     calls: ?[*]const CCall,
@@ -747,10 +796,11 @@ pub export fn aa_userop_build(
             return .build_userop_failed;
         };
 
-    // Build init_code. For EIP-7702 accounts the EOA is the sender and there is
-    // no factory — init_code stays empty, delegation is installed via the
-    // authorization tuple in aa_send_userop on the first UserOp.
+    // Build init_code (CREATE2 only) and, for EIP-7702, prepare the authorization
+    // tuple for the first UserOp so bindings that use the low-level
+    // build/hash/sign/to_json pipeline produce a valid on-chain first op.
     var init_code: []u8 = &[_]u8{};
+    var eip7702_auth: ?core.Authorization = null;
     if (acc.mode == .kernel_create2) {
         const factory_data = create2.buildFactoryCalldata(
             a,
@@ -770,6 +820,24 @@ pub export fn aa_userop_build(
         };
         @memcpy(init_code[0..20], &meta_factory.bytes);
         @memcpy(init_code[20..], factory_data);
+    } else {
+        const rpc_url: []const u8 = if (acc.context.bundler_url.len > 0)
+            acc.context.bundler_url
+        else
+            core.buildRpcUrl(a, acc.context.project_id, acc.context.chain_id) catch {
+                setLastError("failed to build RPC URL from project_id", .{});
+                return .build_userop_failed;
+            };
+        var rpc = Client.init(a, rpc_url) catch {
+            setLastError("failed to create RPC client", .{});
+            return .build_userop_failed;
+        };
+        rpc.http_fn = acc.context.http_fn;
+        rpc.http_ctx = acc.context.http_ctx;
+        eip7702_auth = prepareEip7702Authorization(acc, &rpc, a, acc.context.chain_id) catch |err| switch (err) {
+            AuthPrepError.RpcFailed => return .build_userop_failed,
+            AuthPrepError.SignFailed => return .sign_userop_failed,
+        };
     }
 
     // Stub signature (65 zero bytes)
@@ -796,6 +864,7 @@ pub export fn aa_userop_build(
         .paymaster_and_data = a.alloc(u8, 0) catch return .out_of_memory,
         .signature = stub_sig,
         .chain_id = acc.context.chain_id,
+        .authorization = eip7702_auth,
     };
 
     out.?.* = impl;
@@ -1131,42 +1200,10 @@ pub export fn aa_send_userop(
             @memcpy(init_code[20..], factory_data);
         }
     } else {
-        // EIP-7702 — check on-chain delegation status. Cache on the account so that
-        // subsequent UserOps in the same process skip the round-trip.
-        const installed = if (acc.delegation_installed) |cached| cached else blk: {
-            const code = rpc.getCode(acc.owner_address) catch |err| {
-                setLastError("eth_getCode for 7702 delegation check failed: {s}", .{@errorName(err)});
-                return .send_userop_failed;
-            };
-            defer a.free(code);
-            // Delegation marker: 0xef0100 || <20-byte-target>. Total 23 bytes.
-            const target = core.KERNEL_V3_3_DELEGATION_TARGET;
-            const is_installed = code.len >= 23 and
-                code[0] == 0xef and code[1] == 0x01 and code[2] == 0x00 and
-                std.mem.eql(u8, code[3..23], &target);
-            acc.delegation_installed = is_installed;
-            break :blk is_installed;
+        eip7702_auth = prepareEip7702Authorization(acc, &rpc, a, chain_id) catch |err| switch (err) {
+            AuthPrepError.RpcFailed => return .send_userop_failed,
+            AuthPrepError.SignFailed => return .sign_userop_failed,
         };
-
-        if (!installed) {
-            const eoa_nonce = rpc.getTransactionCountAt(acc.owner_address, "pending") catch |err| {
-                setLastError("eth_getTransactionCount(pending) failed: {s}", .{@errorName(err)});
-                return .send_userop_failed;
-            };
-            const signer_iface = acc.signer.getSigner();
-            const signed = signer_iface.signAuthorization(chain_id, core.KERNEL_V3_3_DELEGATION_TARGET, eoa_nonce) catch |err| {
-                setLastError("signAuthorization failed: {s}", .{@errorName(err)});
-                return .sign_userop_failed;
-            };
-            eip7702_auth = .{
-                .chain_id = signed.chain_id,
-                .address = signed.address,
-                .nonce = signed.nonce,
-                .y_parity = signed.y_parity,
-                .r = signed.r,
-                .s = signed.s,
-            };
-        }
     }
 
     // Step 4: Get gas prices via middleware

@@ -175,8 +175,13 @@ typedef struct {
  *
  * sign_authorization is OPTIONAL (may be NULL). When NULL, the SDK falls back
  * to computing keccak256(0x05 || rlp([chainId, address, nonce])) and calling
- * sign_hash. Append-only — existing 4-field vtables are binary-compatible as
- * long as the new field is zero-initialized by the caller. */
+ * sign_hash.
+ *
+ * NOTE: This field was appended to the struct. Consumers MUST recompile against
+ * this header before linking — the ABI is NOT compatible with code that was
+ * built against the older 4-field vtable (the SDK reads past the old layout).
+ * C99 zero-initialization (`aa_signer_vtable v = {.sign_hash = ...};`) covers
+ * this field automatically at compile time, making the change source-compatible. */
 typedef struct {
     int (*sign_hash)(void *ctx, const uint8_t hash[32], uint8_t sig_out[65]);
     int (*sign_message)(void *ctx, const uint8_t *msg, size_t msg_len, uint8_t sig_out[65]);

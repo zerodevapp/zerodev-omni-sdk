@@ -103,9 +103,10 @@ pub fn defaultSignAuthorization(
     const hash = computeAuthHashLocal(chain_id, address, nonce);
     const sig = try self.signHashFn(self.ptr, hash);
     const y_parity: u8 = switch (sig.v) {
+        0, 1 => sig.v,
         27 => 0,
         28 => 1,
-        else => sig.v,
+        else => return SignerError.SigningFailed,
     };
     return .{
         .chain_id = chain_id,
