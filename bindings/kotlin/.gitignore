@@ -1,5 +1,6 @@
 # Gradle
 .gradle/
+.gradle-local/
 build/
 
 # Native libraries bundled by CI (not checked in)

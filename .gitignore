@@ -12,3 +12,4 @@ bindings/kotlin/build/
 dist/
 /libc_api.a
 SWIFT_DX_FEEDBACK.md
+.worktrees/

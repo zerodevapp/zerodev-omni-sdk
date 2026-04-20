@@ -90,14 +90,20 @@ test "C API: aa_send_userop full pipeline on Sepolia" {
     const pm_status2 = c_api.aa_context_set_paymaster_middleware(ctx, &c_api.aa_paymaster_zerodev);
     try std.testing.expectEqual(c_api.Status.ok, pm_status2);
 
-    // Step 2: Create account (Kernel v3.3 = version 2, index 0)
+    // Step 2: Create signer from the private key
+    var signer: ?*c_api.SignerImpl = null;
+    try std.testing.expectEqual(c_api.Status.ok, c_api.aa_signer_local(&pk_bytes, &signer));
+    try std.testing.expect(signer != null);
+    defer c_api.aa_signer_destroy(signer);
+
+    // Step 3: Create account (Kernel v3.3 = version 2, index 0)
     var account: ?*c_api.AccountImpl = null;
-    const acc_status = c_api.aa_account_create(ctx, &pk_bytes, 2, 0, &account);
+    const acc_status = c_api.aa_account_create(ctx, signer, 2, 0, &account);
     try std.testing.expectEqual(c_api.Status.ok, acc_status);
     try std.testing.expect(account != null);
     defer _ = c_api.aa_account_destroy(account);
 
-    // Step 3: Get address
+    // Step 4: Get address
     var addr: [20]u8 = undefined;
     const addr_status = c_api.aa_account_get_address(account, &addr);
     try std.testing.expectEqual(c_api.Status.ok, addr_status);
@@ -117,7 +123,7 @@ test "C API: aa_send_userop full pipeline on Sepolia" {
     std.debug.print("\n========================================\n", .{});
     std.debug.print("C API TEST: Account address: 0x{s}\n", .{addr_hex});
 
-    // Step 4: Build a call (send 0 ETH to self — noop)
+    // Step 5: Build a call (send 0 ETH to self — noop)
     const call = c_api.CCall{
         .target = addr,
         .value_be = [_]u8{0} ** 32,
@@ -125,7 +131,7 @@ test "C API: aa_send_userop full pipeline on Sepolia" {
         .calldata_len = 0,
     };
 
-    // Step 5: Send UserOp via the high-level orchestrator — THIS IS THE KEY TEST
+    // Step 6: Send UserOp via the high-level orchestrator — THIS IS THE KEY TEST
     var calls_arr = [_]c_api.CCall{call};
     var hash_out: [32]u8 = undefined;
     const send_status = c_api.aa_send_userop(account, @as([*]const c_api.CCall, &calls_arr), 1, &hash_out);
@@ -153,7 +159,7 @@ test "C API: aa_send_userop full pipeline on Sepolia" {
     }
     try std.testing.expect(!hash_zero);
 
-    // Step 6: Wait for user operation receipt (returns full JSON)
+    // Step 7: Wait for user operation receipt (returns full JSON)
     var json_ptr: [*]u8 = undefined;
     var json_len: usize = undefined;
     const receipt_status = c_api.aa_wait_for_user_operation_receipt(account, &hash_out, 0, 0, &json_ptr, &json_len);
