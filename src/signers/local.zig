@@ -34,6 +34,8 @@ pub const LocalSigner = struct {
             .signHashFn = signHashImpl,
             .signMessageFn = signMessageImpl,
             .signTypedDataHashFn = signHashImpl, // EIP-712 hash is already prefixed
+            // signAuthorizationFn left null — default path computes the auth hash
+            // and calls signHash, which is exactly what we want here.
         };
     }
 
@@ -70,3 +72,66 @@ pub const LocalSigner = struct {
         return signHashImpl(ptr, msg_hash);
     }
 };
+
+test "signAuthorization round-trip: recovered address matches signer" {
+    const allocator = std.testing.allocator;
+    const Hash = zigeth.primitives.Hash;
+    const secp = zigeth.crypto.secp256k1;
+    const Sig = zigeth.primitives.Signature;
+
+    var pk: [32]u8 = undefined;
+    @memset(&pk, 0x11);
+
+    var local = try LocalSigner.init(allocator, pk);
+    const s = local.signer();
+    const owner_addr = s.getAddress();
+
+    const chain_id: u64 = 11155111;
+    const target = [_]u8{
+        0xd6, 0xce, 0xdd, 0xe8, 0x4b, 0xe4, 0x08, 0x93, 0xd1, 0x53,
+        0xbe, 0x9d, 0x46, 0x7c, 0xd6, 0xad, 0x37, 0x87, 0x5b, 0x28,
+    };
+    const nonce: u64 = 7;
+
+    const auth = try s.signAuthorization(chain_id, target, nonce);
+    try std.testing.expectEqual(chain_id, auth.chain_id);
+    try std.testing.expectEqualSlices(u8, &target, &auth.address);
+    try std.testing.expectEqual(nonce, auth.nonce);
+
+    // Re-derive the hash locally and recover the signer.
+    var rlp_buf: [64]u8 = undefined;
+    var payload: [40]u8 = undefined;
+    var p: usize = 0;
+    // chainId (11155111 = 0xaa36a7)
+    payload[p] = 0x83;
+    p += 1;
+    payload[p] = 0xaa;
+    payload[p + 1] = 0x36;
+    payload[p + 2] = 0xa7;
+    p += 3;
+    payload[p] = 0x94;
+    p += 1;
+    @memcpy(payload[p .. p + 20], &target);
+    p += 20;
+    // nonce=7 (<0x80 → as itself)
+    payload[p] = 0x07;
+    p += 1;
+    rlp_buf[0] = 0xc0 + @as(u8, @intCast(p));
+    @memcpy(rlp_buf[1 .. 1 + p], payload[0..p]);
+
+    var hasher = std.crypto.hash.sha3.Keccak256.init(.{});
+    hasher.update(&[_]u8{0x05});
+    hasher.update(rlp_buf[0 .. 1 + p]);
+    var hash_bytes: [32]u8 = undefined;
+    hasher.final(&hash_bytes);
+
+    const sig = Sig{
+        .r = auth.r,
+        .s = auth.s,
+        .v = auth.y_parity + 27,
+    };
+    const pubkey = try secp.recoverPublicKey(Hash{ .bytes = hash_bytes }, sig);
+    const recovered = pubkey.toAddress();
+    try std.testing.expectEqualSlices(u8, &owner_addr, &recovered.bytes);
+}
+

@@ -178,9 +178,13 @@ pub const Client = struct {
     }
 
     pub fn getTransactionCount(self: *Client, address: Address) !u64 {
+        return self.getTransactionCountAt(address, "latest");
+    }
+
+    pub fn getTransactionCountAt(self: *Client, address: Address, block_tag: []const u8) !u64 {
         const addr_hex = try address.toHex(self.allocator);
         defer self.allocator.free(addr_hex);
-        var p = [_]std.json.Value{ .{ .string = addr_hex }, .{ .string = "latest" } };
+        var p = [_]std.json.Value{ .{ .string = addr_hex }, .{ .string = block_tag } };
         const result = try self.callWithParams("eth_getTransactionCount", &p);
         defer freeValue(self.allocator, result);
         if (result != .string) return error.InvalidResponse;

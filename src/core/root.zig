@@ -8,7 +8,16 @@ pub const userop = @import("userop.zig");
 pub const entrypoint = @import("entrypoint.zig");
 pub const bundler = @import("bundler.zig");
 pub const paymaster = @import("paymaster.zig");
+pub const rlp = @import("rlp.zig");
+pub const authorization = @import("authorization.zig");
+pub const Authorization = authorization.Authorization;
 pub const getKernelAddress = create2.getKernelAddress;
+
+/// EIP-7702 delegation target — Kernel v3.3 implementation address (as bytes).
+pub const KERNEL_V3_3_DELEGATION_TARGET: [20]u8 = [_]u8{
+    0xd6, 0xce, 0xdd, 0xe8, 0x4b, 0xe4, 0x08, 0x93, 0xd1, 0x53,
+    0xbe, 0x9d, 0x46, 0x7c, 0xd6, 0xad, 0x37, 0x87, 0x5b, 0x28,
+};
 
 /// Kernel smart account versions
 pub const KernelVersion = enum {
@@ -90,6 +99,11 @@ pub fn buildPaymasterUrl(allocator: std.mem.Allocator, project_id: []const u8, c
         "https://rpc.zerodev.app/api/v3/{s}/chain/{d}",
         .{ project_id, chain_id },
     );
+}
+
+test {
+    const std_ = @import("std");
+    std_.testing.refAllDecls(@This());
 }
 
 test "buildRpcUrl" {

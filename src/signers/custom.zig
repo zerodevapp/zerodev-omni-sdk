@@ -8,13 +8,29 @@ const signer_mod = @import("signer.zig");
 const Signer = signer_mod.Signer;
 const Signature = signer_mod.Signature;
 const SignerError = signer_mod.SignerError;
+const Authorization = signer_mod.Authorization;
+
+/// Layout of the authorization-out struct exposed to C. Must match the
+/// `aa_authorization_t` defined in include/aa.h.
+pub const CAuthorization = extern struct {
+    chain_id: u64,
+    address: [20]u8,
+    nonce: u64,
+    y_parity: u8,
+    r: [32]u8,
+    s: [32]u8,
+};
 
 /// C-compatible signer vtable. Each function returns 0 on success, non-zero on error.
+/// Fields are appended at the END — existing consumers who pass a struct without
+/// sign_authorization must still work. `sign_authorization` is treated as optional:
+/// NULL means "fall back to sign_hash over the EIP-7702 auth hash".
 pub const CVTable = extern struct {
     sign_hash: *const fn (?*anyopaque, *const [32]u8, *[65]u8) callconv(.c) c_int,
     sign_message: *const fn (?*anyopaque, ?[*]const u8, usize, *[65]u8) callconv(.c) c_int,
     sign_typed_data_hash: *const fn (?*anyopaque, *const [32]u8, *[65]u8) callconv(.c) c_int,
     get_address: *const fn (?*anyopaque, *[20]u8) callconv(.c) c_int,
+    sign_authorization: ?*const fn (?*anyopaque, u64, *const [20]u8, u64, *CAuthorization) callconv(.c) c_int = null,
 };
 
 pub const CustomSigner = struct {
@@ -28,7 +44,33 @@ pub const CustomSigner = struct {
             .signHashFn = signHashImpl,
             .signMessageFn = signMessageImpl,
             .signTypedDataHashFn = signTypedDataHashImpl,
+            .signAuthorizationFn = signAuthorizationImpl,
         };
+    }
+
+    fn signAuthorizationImpl(
+        ptr: *anyopaque,
+        chain_id: u64,
+        address: [20]u8,
+        nonce: u64,
+    ) SignerError!Authorization {
+        const self: *CustomSigner = @ptrCast(@alignCast(ptr));
+        if (self.vtable.sign_authorization) |f| {
+            var out: CAuthorization = undefined;
+            const result = f(self.user_ctx, chain_id, &address, nonce, &out);
+            if (result != 0) return SignerError.SigningFailed;
+            return .{
+                .chain_id = out.chain_id,
+                .address = out.address,
+                .nonce = out.nonce,
+                .y_parity = out.y_parity,
+                .r = out.r,
+                .s = out.s,
+            };
+        }
+        // Fall back to default: hash and signHash.
+        const s = self.signer();
+        return signer_mod.defaultSignAuthorization(s, chain_id, address, nonce);
     }
 
     fn getAddressImpl(ptr: *anyopaque) [20]u8 {

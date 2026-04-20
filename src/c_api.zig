@@ -501,6 +501,50 @@ pub export fn aa_signer_custom(
     return .ok;
 }
 
+/// C-visible EIP-7702 authorization struct. Layout matches `aa_authorization_t`.
+pub const CAuthorization = extern struct {
+    chain_id: u64,
+    address: [20]u8,
+    nonce: u64,
+    y_parity: u8,
+    r: [32]u8,
+    s: [32]u8,
+};
+
+/// Sign an EIP-7702 authorization (chainId, delegation-target, EOA-nonce).
+/// Works on any signer; custom signers may implement this natively via their
+/// vtable or fall back to the default hash-then-sign path.
+pub export fn aa_signer_sign_authorization(
+    signer: ?*SignerImpl,
+    chain_id: u64,
+    address: ?[*]const u8,
+    nonce: u64,
+    out: ?*CAuthorization,
+) callconv(.c) Status {
+    const s = signer orelse return .invalid_signer;
+    const addr_ptr = address orelse return .null_out_ptr;
+    const o = out orelse return .null_out_ptr;
+
+    var addr: [20]u8 = undefined;
+    @memcpy(&addr, addr_ptr[0..20]);
+
+    const sig_iface = s.getSigner();
+    const signed = sig_iface.signAuthorization(chain_id, addr, nonce) catch {
+        setLastError("signAuthorization failed", .{});
+        return .sign_userop_failed;
+    };
+
+    o.* = .{
+        .chain_id = signed.chain_id,
+        .address = signed.address,
+        .nonce = signed.nonce,
+        .y_parity = signed.y_parity,
+        .r = signed.r,
+        .s = signed.s,
+    };
+    return .ok;
+}
+
 pub export fn aa_signer_destroy(signer: ?*SignerImpl) callconv(.c) void {
     const s = signer orelse return;
     if (s.kind == .json_rpc) {
@@ -512,6 +556,12 @@ pub export fn aa_signer_destroy(signer: ?*SignerImpl) callconv(.c) void {
 
 // ---- Account ----
 
+pub const AccountMode = enum { kernel_create2, eip7702 };
+
+/// Raw bytes of the Kernel v3.3 implementation address — the delegation target
+/// for EIP-7702 accounts.
+pub const KERNEL_V3_3_DELEGATION_TARGET: [20]u8 = core.KERNEL_V3_3_DELEGATION_TARGET;
+
 pub const AccountImpl = struct {
     context: *ContextImpl,
     signer: *SignerImpl,
@@ -520,6 +570,9 @@ pub const AccountImpl = struct {
     index: u32,
     owner_address: Address,
     sender_address: Address,
+    mode: AccountMode = .kernel_create2,
+    /// Cached on-chain delegation status for EIP-7702 accounts. Null until first lookup.
+    delegation_installed: ?bool = null,
 
     pub fn getValidator(self: *AccountImpl) Validator {
         return self.ecdsa.validator();
@@ -568,6 +621,39 @@ pub export fn aa_account_create(
     return .ok;
 }
 
+/// Create an EIP-7702 account. The account's address is the signer's EOA address;
+/// there is no CREATE2, no init code, and no index — delegation is installed via
+/// an authorization tuple on the first UserOperation.
+pub export fn aa_context_new_account_7702(
+    ctx: ?*ContextImpl,
+    signer: ?*SignerImpl,
+    out: ?*?*AccountImpl,
+) callconv(.c) Status {
+    if (out == null) return .null_out_ptr;
+    const c = ctx orelse return .null_context;
+    const s = signer orelse return .invalid_signer;
+
+    const allocator = c.allocator;
+    const owner_addr = Address.fromBytes(s.getSigner().getAddress());
+
+    const impl = allocator.create(AccountImpl) catch return .out_of_memory;
+    impl.* = .{
+        .context = c,
+        .signer = s,
+        .ecdsa = EcdsaValidator.init(s.getSigner()),
+        .kernel_version = .v3_3,
+        .index = 0,
+        .owner_address = owner_addr,
+        // For 7702, sender == owner (EOA).
+        .sender_address = owner_addr,
+        .mode = .eip7702,
+        .delegation_installed = null,
+    };
+
+    out.?.* = impl;
+    return .ok;
+}
+
 pub export fn aa_account_get_address(
     account: ?*AccountImpl,
     addr_out: ?[*]u8,
@@ -601,6 +687,7 @@ const UserOpImpl = struct {
     paymaster_and_data: []u8,
     signature: []u8,
     chain_id: u64,
+    authorization: ?core.Authorization = null,
 };
 
 pub const CCall = extern struct {
@@ -660,26 +747,30 @@ pub export fn aa_userop_build(
             return .build_userop_failed;
         };
 
-    // Build factory data for account deployment
-    const factory_data = create2.buildFactoryCalldata(
-        a,
-        acc.owner_address,
-        @as(u256, acc.index),
-        acc.kernel_version,
-    ) catch {
-        setLastError("failed to build factory calldata", .{});
-        return .build_userop_failed;
-    };
+    // Build init_code. For EIP-7702 accounts the EOA is the sender and there is
+    // no factory — init_code stays empty, delegation is installed via the
+    // authorization tuple in aa_send_userop on the first UserOp.
+    var init_code: []u8 = &[_]u8{};
+    if (acc.mode == .kernel_create2) {
+        const factory_data = create2.buildFactoryCalldata(
+            a,
+            acc.owner_address,
+            @as(u256, acc.index),
+            acc.kernel_version,
+        ) catch {
+            setLastError("failed to build factory calldata", .{});
+            return .build_userop_failed;
+        };
 
-    // Build init_code = meta_factory_address ++ factory_data
-    const meta_factory = Address.fromHex(core.META_FACTORY) catch {
-        return .build_userop_failed;
-    };
-    var init_code = a.alloc(u8, 20 + factory_data.len) catch {
-        return .out_of_memory;
-    };
-    @memcpy(init_code[0..20], &meta_factory.bytes);
-    @memcpy(init_code[20..], factory_data);
+        const meta_factory = Address.fromHex(core.META_FACTORY) catch {
+            return .build_userop_failed;
+        };
+        init_code = a.alloc(u8, 20 + factory_data.len) catch {
+            return .out_of_memory;
+        };
+        @memcpy(init_code[0..20], &meta_factory.bytes);
+        @memcpy(init_code[20..], factory_data);
+    }
 
     // Stub signature (65 zero bytes)
     const stub_sig = a.alloc(u8, 65) catch {
@@ -829,8 +920,23 @@ pub export fn aa_userop_to_json(
     , .{ userop.max_fee_per_gas, userop.max_priority_fee_per_gas }) catch return .serialize_failed;
 
     writer.print(
-        \\"paymasterAndData":"{s}","signature":"{s}"}}
+        \\"paymasterAndData":"{s}","signature":"{s}"
     , .{ pm_hex, sig_hex }) catch return .serialize_failed;
+
+    if (userop.authorization) |auth| {
+        const addr = Address.fromBytes(auth.address);
+        const addr_hex = addr.toHex(allocator) catch return .serialize_failed;
+        defer allocator.free(addr_hex);
+        const r_hex = zigeth.utils.hex.bytesToHex(allocator, &auth.r) catch return .serialize_failed;
+        defer allocator.free(r_hex);
+        const s_hex = zigeth.utils.hex.bytesToHex(allocator, &auth.s) catch return .serialize_failed;
+        defer allocator.free(s_hex);
+        writer.print(
+            \\,"eip7702Auth":{{"chainId":"0x{x}","address":"{s}","nonce":"0x{x}","yParity":"0x{x}","r":"{s}","s":"{s}"}}
+        , .{ auth.chain_id, addr_hex, auth.nonce, auth.y_parity, r_hex, s_hex }) catch return .serialize_failed;
+    }
+
+    writer.writeAll("}") catch return .serialize_failed;
 
     // Copy to caller-owned buffer
     const result = allocator.alloc(u8, buf.items.len) catch return .out_of_memory;
@@ -1009,17 +1115,58 @@ pub export fn aa_send_userop(
             return .build_userop_failed;
         };
 
-    // Step 3: Build init_code if nonce == 0 (account not yet deployed)
+    // Step 3: Build init_code (CREATE2 only) and optionally sign an EIP-7702
+    // authorization for the first 7702 UserOp.
     var init_code: []u8 = &[_]u8{};
-    if (nonce == 0) {
-        const factory_data = create2.buildFactoryCalldata(a, acc.owner_address, @as(u256, acc.index), acc.kernel_version) catch {
-            setLastError("failed to build factory calldata", .{});
-            return .build_userop_failed;
+    var eip7702_auth: ?core.Authorization = null;
+    if (acc.mode == .kernel_create2) {
+        if (nonce == 0) {
+            const factory_data = create2.buildFactoryCalldata(a, acc.owner_address, @as(u256, acc.index), acc.kernel_version) catch {
+                setLastError("failed to build factory calldata", .{});
+                return .build_userop_failed;
+            };
+            const meta_factory = Address.fromHex(core.META_FACTORY) catch return .build_userop_failed;
+            init_code = a.alloc(u8, 20 + factory_data.len) catch return .out_of_memory;
+            @memcpy(init_code[0..20], &meta_factory.bytes);
+            @memcpy(init_code[20..], factory_data);
+        }
+    } else {
+        // EIP-7702 — check on-chain delegation status. Cache on the account so that
+        // subsequent UserOps in the same process skip the round-trip.
+        const installed = if (acc.delegation_installed) |cached| cached else blk: {
+            const code = rpc.getCode(acc.owner_address) catch |err| {
+                setLastError("eth_getCode for 7702 delegation check failed: {s}", .{@errorName(err)});
+                return .send_userop_failed;
+            };
+            defer a.free(code);
+            // Delegation marker: 0xef0100 || <20-byte-target>. Total 23 bytes.
+            const target = core.KERNEL_V3_3_DELEGATION_TARGET;
+            const is_installed = code.len >= 23 and
+                code[0] == 0xef and code[1] == 0x01 and code[2] == 0x00 and
+                std.mem.eql(u8, code[3..23], &target);
+            acc.delegation_installed = is_installed;
+            break :blk is_installed;
         };
-        const meta_factory = Address.fromHex(core.META_FACTORY) catch return .build_userop_failed;
-        init_code = a.alloc(u8, 20 + factory_data.len) catch return .out_of_memory;
-        @memcpy(init_code[0..20], &meta_factory.bytes);
-        @memcpy(init_code[20..], factory_data);
+
+        if (!installed) {
+            const eoa_nonce = rpc.getTransactionCountAt(acc.owner_address, "pending") catch |err| {
+                setLastError("eth_getTransactionCount(pending) failed: {s}", .{@errorName(err)});
+                return .send_userop_failed;
+            };
+            const signer_iface = acc.signer.getSigner();
+            const signed = signer_iface.signAuthorization(chain_id, core.KERNEL_V3_3_DELEGATION_TARGET, eoa_nonce) catch |err| {
+                setLastError("signAuthorization failed: {s}", .{@errorName(err)});
+                return .sign_userop_failed;
+            };
+            eip7702_auth = .{
+                .chain_id = signed.chain_id,
+                .address = signed.address,
+                .nonce = signed.nonce,
+                .y_parity = signed.y_parity,
+                .r = signed.r,
+                .s = signed.s,
+            };
+        }
     }
 
     // Step 4: Get gas prices via middleware
@@ -1043,6 +1190,7 @@ pub export fn aa_send_userop(
         .max_fee_per_gas = @intCast(gas_prices.max_fee_per_gas),
         .max_priority_fee_per_gas = @intCast(gas_prices.max_priority_fee_per_gas),
         .paymaster_and_data = &[_]u8{},
+        .authorization = eip7702_auth,
     };
 
     var val = acc.getValidator();

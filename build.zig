@@ -210,4 +210,21 @@ pub fn build(b: *std.Build) void {
 
     const live_capi_step = b.step("test-live-capi", "Run C API live tests against ZeroDev Sepolia");
     live_capi_step.dependOn(&run_live_capi_tests.step);
+
+    const live_7702_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/e2e/live_7702.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "c_api", .module = c_api_test_mod },
+            },
+        }),
+    });
+    live_7702_tests.linkLibC();
+    live_7702_tests.linkLibrary(secp256k1_artifact);
+    const run_live_7702_tests = b.addRunArtifact(live_7702_tests);
+
+    const live_7702_step = b.step("test-live-7702", "Run EIP-7702 live tests against ZeroDev Sepolia");
+    live_7702_step.dependOn(&run_live_7702_tests.step);
 }

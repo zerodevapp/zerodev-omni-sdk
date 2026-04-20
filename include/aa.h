@@ -160,17 +160,46 @@ aa_status aa_signer_rpc(const char *rpc_url,
                          const uint8_t address[20],
                          aa_signer_t **out);
 
-/** Create a custom signer from a vtable of function pointers. */
+/* ---- EIP-7702 authorization ---- */
+
+typedef struct {
+    uint64_t chain_id;
+    uint8_t address[20];
+    uint64_t nonce;
+    uint8_t y_parity;
+    uint8_t r[32];
+    uint8_t s[32];
+} aa_authorization_t;
+
+/** Create a custom signer from a vtable of function pointers.
+ *
+ * sign_authorization is OPTIONAL (may be NULL). When NULL, the SDK falls back
+ * to computing keccak256(0x05 || rlp([chainId, address, nonce])) and calling
+ * sign_hash. Append-only — existing 4-field vtables are binary-compatible as
+ * long as the new field is zero-initialized by the caller. */
 typedef struct {
     int (*sign_hash)(void *ctx, const uint8_t hash[32], uint8_t sig_out[65]);
     int (*sign_message)(void *ctx, const uint8_t *msg, size_t msg_len, uint8_t sig_out[65]);
     int (*sign_typed_data_hash)(void *ctx, const uint8_t hash[32], uint8_t sig_out[65]);
     int (*get_address)(void *ctx, uint8_t addr_out[20]);
+    int (*sign_authorization)(void *ctx, uint64_t chain_id, const uint8_t address[20],
+                              uint64_t nonce, aa_authorization_t *out);
 } aa_signer_vtable;
 
 aa_status aa_signer_custom(const aa_signer_vtable *vtable,
                             void *ctx,
                             aa_signer_t **out);
+
+/** Sign an EIP-7702 authorization tuple (chainId, delegation-target, EOA nonce).
+ *
+ * Works on any signer. Custom signers may implement this natively via their
+ * vtable; otherwise the SDK computes keccak256(0x05 || rlp([chainId, address,
+ * nonce])) and signs the hash with sign_hash. */
+aa_status aa_signer_sign_authorization(aa_signer_t *signer,
+                                        uint64_t chain_id,
+                                        const uint8_t address[20],
+                                        uint64_t nonce,
+                                        aa_authorization_t *out);
 
 /** Destroy a signer handle. */
 void aa_signer_destroy(aa_signer_t *signer);
@@ -182,6 +211,14 @@ aa_status aa_account_create(aa_context_t *ctx,
                             aa_kernel_version version,
                             uint32_t index,
                             aa_account_t **out);
+
+/** Create an EIP-7702 account. The account's address is the signer's EOA
+ * address; there is no CREATE2, no init code, and no index parameter. On the
+ * first UserOperation the SDK signs an authorization tuple (chainId, Kernel
+ * v3.3 implementation, EOA nonce) and attaches it via the `eip7702Auth` field. */
+aa_status aa_context_new_account_7702(aa_context_t *ctx,
+                                       aa_signer_t *signer,
+                                       aa_account_t **out);
 
 aa_status aa_account_get_address(aa_account_t *account,
                                  uint8_t addr_out[20]);

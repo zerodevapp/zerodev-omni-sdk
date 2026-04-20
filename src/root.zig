@@ -10,6 +10,7 @@ pub const validators = struct {
     pub const Validator = @import("validators/Validator.zig").Validator;
     pub const EcdsaValidator = @import("validators/ecdsa.zig").EcdsaValidator;
 };
+pub const signers = @import("signers");
 
 // Re-export commonly used types
 pub const KernelVersion = core.KernelVersion;
@@ -18,4 +19,6 @@ pub const UserOp = core.userop.UserOp;
 
 test {
     std.testing.refAllDecls(@This());
+    std.testing.refAllDecls(signers);
+    std.testing.refAllDecls(core);
 }

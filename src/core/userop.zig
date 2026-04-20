@@ -9,6 +9,7 @@ const zigeth = @import("zigeth");
 const Address = zigeth.primitives.Address;
 const Hash = zigeth.primitives.Hash;
 const keccak = zigeth.crypto.keccak;
+const authz = @import("authorization.zig");
 
 pub const UserOp = struct {
     sender: Address,
@@ -21,6 +22,9 @@ pub const UserOp = struct {
     max_fee_per_gas: u128,
     max_priority_fee_per_gas: u128,
     paymaster_and_data: []const u8,
+    /// Optional EIP-7702 authorization — emitted as `eip7702Auth` in the bundler
+    /// JSON when non-null. Only set for the first UserOp of a 7702-delegated EOA.
+    authorization: ?authz.Authorization = null,
 
     /// Serialize this UserOp to a JSON object in the ERC-4337 v0.7 RPC format.
     /// The caller must free the returned value via json_rpc.freeValue().
@@ -92,6 +96,33 @@ pub const UserOp = struct {
         // signature
         const sig_hex = try zigeth.utils.hex.bytesToHex(allocator, signature);
         try obj.put(try allocator.dupe(u8, "signature"), .{ .string = sig_hex });
+
+        // EIP-7702 authorization (optional — viem/ZeroDev bundler shape)
+        if (self.authorization) |auth| {
+            var auth_obj = std.json.ObjectMap.init(allocator);
+            errdefer auth_obj.deinit();
+
+            const auth_cid_hex = try std.fmt.allocPrint(allocator, "0x{x}", .{auth.chain_id});
+            try auth_obj.put(try allocator.dupe(u8, "chainId"), .{ .string = auth_cid_hex });
+
+            const auth_addr = Address.fromBytes(auth.address);
+            const auth_addr_hex = try auth_addr.toHex(allocator);
+            try auth_obj.put(try allocator.dupe(u8, "address"), .{ .string = auth_addr_hex });
+
+            const auth_nonce_hex = try std.fmt.allocPrint(allocator, "0x{x}", .{auth.nonce});
+            try auth_obj.put(try allocator.dupe(u8, "nonce"), .{ .string = auth_nonce_hex });
+
+            const yp_hex = try std.fmt.allocPrint(allocator, "0x{x}", .{auth.y_parity});
+            try auth_obj.put(try allocator.dupe(u8, "yParity"), .{ .string = yp_hex });
+
+            const r_hex = try zigeth.utils.hex.bytesToHex(allocator, &auth.r);
+            try auth_obj.put(try allocator.dupe(u8, "r"), .{ .string = r_hex });
+
+            const s_hex = try zigeth.utils.hex.bytesToHex(allocator, &auth.s);
+            try auth_obj.put(try allocator.dupe(u8, "s"), .{ .string = s_hex });
+
+            try obj.put(try allocator.dupe(u8, "eip7702Auth"), .{ .object = auth_obj });
+        }
 
         return .{ .object = obj };
     }
