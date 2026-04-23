@@ -38,6 +38,26 @@ let receipt = try await account.waitForUserOperationReceipt(useropHash: hash)
 let signer = try Signer.async(myAsyncSignerImpl)  // AsyncSignerProtocol
 ```
 
+### EIP-7702 delegation
+
+Delegate the EOA's code to a Kernel implementation so its address IS the
+smart-account address — no CREATE2, no index. The SDK signs an authorization
+tuple on the first UserOp and attaches it via `eip7702Auth`; subsequent UserOps
+omit the authorization once delegation is installed.
+
+```swift
+let signer = try Signer.generate()  // or Signer.local(privateKey:) / Signer.custom(_:)
+let account = try ctx.newAccount7702(signer: signer, version: .v3_3)
+let hash = try await account.sendUserOp(calls: [Call(target: account.getAddress())])
+```
+
+Custom signers may implement `SignerProtocol.signAuthorization(chainId:address:nonce:)`
+(and conform to `SignerProvidesAuthorization` with `providesSignAuthorization = true`)
+to sign EIP-7702 tuples natively; otherwise the SDK falls back to hashing
+`keccak256(0x05 || rlp([chainId, address, nonce]))` and calling `signHash`.
+
+> **Full example:** [`examples/gasless-transfer-7702/swift/`](examples/gasless-transfer-7702/swift/)
+
 > **Full example:** [omni-sdk-swift-example](https://github.com/zerodevapp/omni-sdk-swift-example) — SwiftUI app with Privy embedded wallet + gasless transactions
 
 ---

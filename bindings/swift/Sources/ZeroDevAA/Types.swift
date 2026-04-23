@@ -56,6 +56,40 @@ public enum KernelVersion: Int32, Sendable {
     case v3_3 = 0
 }
 
+/// EIP-7702 authorization tuple.
+///
+/// `yParity`, `r`, and `s` together form the signature over
+/// `keccak256(0x05 || rlp([chainId, address, nonce]))`. The SDK produces these
+/// values via `Signer.signAuthorization(...)` and attaches them to the first
+/// UserOperation of an EIP-7702 account so the EOA delegates its code to the
+/// Kernel implementation.
+public struct Authorization: Sendable {
+    /// Chain ID this authorization is valid on (0 = any chain).
+    public let chainId: UInt64
+    /// Delegation target (Kernel implementation address). 20 bytes.
+    public let address: [UInt8]
+    /// EOA nonce at the time of signing.
+    public let nonce: UInt64
+    /// Signature y-parity (0 or 1).
+    public let yParity: UInt8
+    /// Signature r component. 32 bytes.
+    public let r: [UInt8]
+    /// Signature s component. 32 bytes.
+    public let s: [UInt8]
+
+    public init(chainId: UInt64, address: [UInt8], nonce: UInt64, yParity: UInt8, r: [UInt8], s: [UInt8]) {
+        precondition(address.count == 20, "address must be 20 bytes")
+        precondition(r.count == 32, "r must be 32 bytes")
+        precondition(s.count == 32, "s must be 32 bytes")
+        self.chainId = chainId
+        self.address = address
+        self.nonce = nonce
+        self.yParity = yParity
+        self.r = r
+        self.s = s
+    }
+}
+
 /// Gas pricing middleware provider.
 public enum GasMiddleware: Sendable {
     /// ZeroDev: calls zd_getUserOperationGasPrice.
