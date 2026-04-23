@@ -34,9 +34,7 @@ import (
 type KernelVersion int
 
 const (
-	KernelV3_1 KernelVersion = 0
-	KernelV3_2 KernelVersion = 1
-	KernelV3_3 KernelVersion = 2
+	KernelV3_3 KernelVersion = 0
 )
 
 // GasMiddleware selects the gas pricing provider.

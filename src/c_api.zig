@@ -560,9 +560,7 @@ pub const AccountMode = enum { kernel_create2, eip7702 };
 
 /// C-facing kernel version constants. Mirror the `aa_kernel_version` enum in
 /// include/aa.h — pass these (not raw integers) when calling the FFI.
-pub const AA_KERNEL_V3_1: c_int = 0;
-pub const AA_KERNEL_V3_2: c_int = 1;
-pub const AA_KERNEL_V3_3: c_int = 2;
+pub const AA_KERNEL_V3_3: c_int = 0;
 
 /// Raw bytes of the Kernel v3.3 implementation address — the delegation target
 /// for EIP-7702 accounts.

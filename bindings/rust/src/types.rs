@@ -60,17 +60,13 @@ impl std::fmt::Display for Hash {
 /// Kernel smart account version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KernelVersion {
-    V3_1,
-    V3_2,
     V3_3,
 }
 
 impl KernelVersion {
     pub(crate) fn to_c(self) -> i32 {
         match self {
-            Self::V3_1 => 0,
-            Self::V3_2 => 1,
-            Self::V3_3 => 2,
+            Self::V3_3 => 0,
         }
     }
 }

@@ -53,9 +53,7 @@ public struct Hash: Sendable, CustomStringConvertible {
 }
 
 public enum KernelVersion: Int32, Sendable {
-    case v3_1 = 0
-    case v3_2 = 1
-    case v3_3 = 2
+    case v3_3 = 0
 }
 
 /// Gas pricing middleware provider.

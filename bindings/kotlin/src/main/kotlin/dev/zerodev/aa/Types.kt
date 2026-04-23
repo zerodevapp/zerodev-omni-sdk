@@ -38,9 +38,7 @@ value class Hash(val bytes: ByteArray) {
 }
 
 enum class KernelVersion(val code: Int) {
-    V3_1(0),
-    V3_2(1),
-    V3_3(2),
+    V3_3(0),
 }
 
 /** Gas pricing middleware provider. */

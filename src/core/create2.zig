@@ -192,13 +192,6 @@ test "getKernelAddress differs by index" {
     try std.testing.expect(!std.mem.eql(u8, &addr0.bytes, &addr1.bytes));
 }
 
-test "getKernelAddress differs by version" {
-    const owner = try Address.fromHex("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
-    const addr_v33 = try getKernelAddress(owner, 0, .v3_3);
-    const addr_v32 = try getKernelAddress(owner, 0, .v3_2);
-    try std.testing.expect(!std.mem.eql(u8, &addr_v33.bytes, &addr_v32.bytes));
-}
-
 test "getKernelAddress differs by owner" {
     const owner1 = try Address.fromHex("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
     const owner2 = try Address.fromHex("0x70997970C51812dc3A010C7d01b50e0d17dc79C8");
@@ -208,20 +201,6 @@ test "getKernelAddress differs by owner" {
 }
 
 // SDK-verified test vectors
-test "initCodeHash matches SDK constant — v3.1" {
-    const impl = try Address.fromHex("0xBAC849bB641841b44E965fB01A4Bf5F074f84b4D");
-    const h = initCodeHashERC1967(impl);
-    const expected = try Hash.fromHex("0x85d96aa1c9a65886d094915d76ccae85f14027a02c1647dde659f869460f03e6");
-    try std.testing.expect(h.eql(expected));
-}
-
-test "initCodeHash matches SDK constant — v3.2" {
-    const impl = try Address.fromHex("0xD830D15D3dc0C269F3dBAa0F3e8626d33CFdaBe1");
-    const h = initCodeHashERC1967(impl);
-    const expected = try Hash.fromHex("0xc7c48c9dd12de68b8a4689b6f8c8c07b61d4d6fa4ddecdd86a6980d045fa67eb");
-    try std.testing.expect(h.eql(expected));
-}
-
 test "initCodeHash matches SDK constant — v3.3" {
     const impl = try Address.fromHex("0xd6CEDDe84be40893d153Be9d467CD6aD37875b28");
     const h = initCodeHashERC1967(impl);
@@ -235,20 +214,6 @@ test "initialize selector matches SDK — 0x3c3b752b" {
     try std.testing.expectEqual(@as(u8, 0x3b), selector[1]);
     try std.testing.expectEqual(@as(u8, 0x75), selector[2]);
     try std.testing.expectEqual(@as(u8, 0x2b), selector[3]);
-}
-
-test "getKernelAddress matches SDK — v3.1, index=0" {
-    const owner = try Address.fromHex("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
-    const addr = try getKernelAddress(owner, 0, .v3_1);
-    const expected = try Address.fromHex("0xB3729F7e1Ab0B4a50E7De5599Ecc321B8775d30d");
-    try std.testing.expectEqualSlices(u8, &expected.bytes, &addr.bytes);
-}
-
-test "getKernelAddress matches SDK — v3.2, index=0" {
-    const owner = try Address.fromHex("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
-    const addr = try getKernelAddress(owner, 0, .v3_2);
-    const expected = try Address.fromHex("0xDA3e042335c74953F4F282B748Bb8aA8585fac68");
-    try std.testing.expectEqualSlices(u8, &expected.bytes, &addr.bytes);
 }
 
 test "getKernelAddress matches SDK — v3.3, index=0" {

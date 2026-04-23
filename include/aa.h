@@ -41,9 +41,7 @@ typedef enum {
 /* ---- Kernel version enum ---- */
 
 typedef enum {
-    AA_KERNEL_V3_1 = 0,
-    AA_KERNEL_V3_2 = 1,
-    AA_KERNEL_V3_3 = 2,
+    AA_KERNEL_V3_3 = 0,
 } aa_kernel_version;
 
 /* ---- Opaque handles ---- */

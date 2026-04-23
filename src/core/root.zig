@@ -19,24 +19,19 @@ pub const KERNEL_V3_3_DELEGATION_TARGET: [20]u8 = [_]u8{
     0xbe, 0x9d, 0x46, 0x7c, 0xd6, 0xad, 0x37, 0x87, 0x5b, 0x28,
 };
 
-/// Kernel smart account versions
-pub const KernelVersion = enum {
-    v3_1,
-    v3_2,
-    v3_3,
+/// Kernel smart account versions. Only v3.3 is supported today — earlier
+/// versions were never wired into examples, e2e tests, or language bindings.
+pub const KernelVersion = enum(u8) {
+    v3_3 = 0,
 
     pub fn factoryAddress(self: KernelVersion) []const u8 {
         return switch (self) {
-            .v3_1 => "0xaac5D4240AF87249B3f71BC8E4A2cae074A3E419",
-            .v3_2 => "0x7a1dBAB750f12a90EB1B60D2Ae3aD17D4D81EfFe",
             .v3_3 => "0x2577507b78c2008Ff367261CB6285d44ba5eF2E9",
         };
     }
 
     pub fn implementationAddress(self: KernelVersion) []const u8 {
         return switch (self) {
-            .v3_1 => "0xBAC849bB641841b44E965fB01A4Bf5F074f84b4D",
-            .v3_2 => "0xD830D15D3dc0C269F3dBAa0F3e8626d33CFdaBe1",
             .v3_3 => "0xd6CEDDe84be40893d153Be9d467CD6aD37875b28",
         };
     }
@@ -47,38 +42,27 @@ pub const KernelVersion = enum {
     pub fn delegationTarget(self: KernelVersion) ?[20]u8 {
         return switch (self) {
             .v3_3 => KERNEL_V3_3_DELEGATION_TARGET,
-            else => null,
         };
     }
 
     pub fn fromString(str: []const u8) ?KernelVersion {
-        if (std.mem.eql(u8, str, "v3.1") or std.mem.eql(u8, str, "3.1")) return .v3_1;
-        if (std.mem.eql(u8, str, "v3.2") or std.mem.eql(u8, str, "3.2")) return .v3_2;
         if (std.mem.eql(u8, str, "v3.3") or std.mem.eql(u8, str, "3.3")) return .v3_3;
         return null;
     }
 
     pub fn toString(self: KernelVersion) []const u8 {
         return switch (self) {
-            .v3_1 => "v3.1",
-            .v3_2 => "v3.2",
             .v3_3 => "v3.3",
         };
     }
 
     pub fn toInt(self: KernelVersion) u8 {
-        return switch (self) {
-            .v3_1 => 0,
-            .v3_2 => 1,
-            .v3_3 => 2,
-        };
+        return @intFromEnum(self);
     }
 
     pub fn fromInt(val: u8) ?KernelVersion {
         return switch (val) {
-            0 => .v3_1,
-            1 => .v3_2,
-            2 => .v3_3,
+            0 => .v3_3,
             else => null,
         };
     }
@@ -125,6 +109,7 @@ test "buildRpcUrl" {
 
 test "KernelVersion fromString" {
     try std.testing.expectEqual(KernelVersion.v3_3, KernelVersion.fromString("v3.3").?);
-    try std.testing.expectEqual(KernelVersion.v3_1, KernelVersion.fromString("3.1").?);
+    try std.testing.expectEqual(KernelVersion.v3_3, KernelVersion.fromString("3.3").?);
     try std.testing.expect(KernelVersion.fromString("v4.0") == null);
+    try std.testing.expect(KernelVersion.fromString("v3.1") == null);
 }
