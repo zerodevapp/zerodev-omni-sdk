@@ -41,6 +41,16 @@ pub const KernelVersion = enum {
         };
     }
 
+    /// EIP-7702 delegation target for this Kernel version. Returns null for
+    /// versions that don't support 7702. When a future Kernel version adds
+    /// support, extend this switch to return its implementation address bytes.
+    pub fn delegationTarget(self: KernelVersion) ?[20]u8 {
+        return switch (self) {
+            .v3_3 => KERNEL_V3_3_DELEGATION_TARGET,
+            else => null,
+        };
+    }
+
     pub fn fromString(str: []const u8) ?KernelVersion {
         if (std.mem.eql(u8, str, "v3.1") or std.mem.eql(u8, str, "3.1")) return .v3_1;
         if (std.mem.eql(u8, str, "v3.2") or std.mem.eql(u8, str, "3.2")) return .v3_2;

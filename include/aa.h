@@ -220,9 +220,11 @@ aa_status aa_account_create(aa_context_t *ctx,
 /** Create an EIP-7702 account. The account's address is the signer's EOA
  * address; there is no CREATE2, no init code, and no index parameter. On the
  * first UserOperation the SDK signs an authorization tuple (chainId, Kernel
- * v3.3 implementation, EOA nonce) and attaches it via the `eip7702Auth` field. */
+ * implementation for `version`, EOA nonce) and attaches it via the
+ * `eip7702Auth` field. Today only KERNEL_V3_3 supports EIP-7702. */
 aa_status aa_context_new_account_7702(aa_context_t *ctx,
                                        aa_signer_t *signer,
+                                       aa_kernel_version version,
                                        aa_account_t **out);
 
 aa_status aa_account_get_address(aa_account_t *account,

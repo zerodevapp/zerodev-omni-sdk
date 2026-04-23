@@ -623,15 +623,27 @@ pub export fn aa_account_create(
 
 /// Create an EIP-7702 account. The account's address is the signer's EOA address;
 /// there is no CREATE2, no init code, and no index — delegation is installed via
-/// an authorization tuple on the first UserOperation.
+/// an authorization tuple on the first UserOperation. Today only Kernel v3.3
+/// supports EIP-7702; other versions will be rejected.
 pub export fn aa_context_new_account_7702(
     ctx: ?*ContextImpl,
     signer: ?*SignerImpl,
+    version: c_int,
     out: ?*?*AccountImpl,
 ) callconv(.c) Status {
     if (out == null) return .null_out_ptr;
     const c = ctx orelse return .null_context;
     const s = signer orelse return .invalid_signer;
+
+    const kv = KernelVersion.fromInt(@intCast(version)) orelse {
+        setLastError("invalid kernel version: {d}", .{version});
+        return .invalid_kernel_version;
+    };
+
+    if (kv.delegationTarget() == null) {
+        setLastError("kernel {s} does not support EIP-7702", .{kv.toString()});
+        return .invalid_kernel_version;
+    }
 
     const allocator = c.allocator;
     const owner_addr = Address.fromBytes(s.getSigner().getAddress());
@@ -641,7 +653,7 @@ pub export fn aa_context_new_account_7702(
         .context = c,
         .signer = s,
         .ecdsa = EcdsaValidator.init(s.getSigner()),
-        .kernel_version = .v3_3,
+        .kernel_version = kv,
         .index = 0,
         .owner_address = owner_addr,
         // For 7702, sender == owner (EOA).
@@ -710,6 +722,9 @@ fn prepareEip7702Authorization(
 ) AuthPrepError!?core.Authorization {
     if (acc.mode != .eip7702) return null;
 
+    // Version validated at account creation — unreachable here.
+    const target = acc.kernel_version.delegationTarget() orelse unreachable;
+
     const installed = if (acc.delegation_installed) |cached| cached else blk: {
         const code = rpc.getCode(acc.owner_address) catch |err| {
             setLastError("eth_getCode for 7702 delegation check failed: {s}", .{@errorName(err)});
@@ -717,7 +732,6 @@ fn prepareEip7702Authorization(
         };
         defer a.free(code);
         // Delegation marker: 0xef0100 || <20-byte-target>. Total 23 bytes.
-        const target = core.KERNEL_V3_3_DELEGATION_TARGET;
         const is_installed = code.len >= 23 and
             code[0] == 0xef and code[1] == 0x01 and code[2] == 0x00 and
             std.mem.eql(u8, code[3..23], &target);
@@ -732,7 +746,7 @@ fn prepareEip7702Authorization(
         return AuthPrepError.RpcFailed;
     };
     const signer_iface = acc.signer.getSigner();
-    const signed = signer_iface.signAuthorization(chain_id, core.KERNEL_V3_3_DELEGATION_TARGET, eoa_nonce) catch |err| {
+    const signed = signer_iface.signAuthorization(chain_id, target, eoa_nonce) catch |err| {
         setLastError("signAuthorization failed: {s}", .{@errorName(err)});
         return AuthPrepError.SignFailed;
     };
