@@ -166,8 +166,30 @@ class MySigner:
     def sign_typed_data_hash(self, hash: bytes) -> bytes: ...
     def get_address(self) -> bytes: ...
 
+    # Optional — when present, used to sign EIP-7702 auth tuples natively.
+    # Omit it and the SDK falls back to sign_hash over keccak(0x05 || rlp(...)).
+    def sign_authorization(self, chain_id: int, address: bytes, nonce: int): ...
+
 signer = Signer.custom(MySigner())
 ```
+
+### EIP-7702 delegation
+Delegate an EOA to Kernel v3.3 so the EOA itself becomes a smart account — no
+CREATE2, no init code, no index. On the first UserOp the SDK signs an auth
+tuple `(chainId, kernelImpl, nonce)` and attaches it as `eip7702Auth`.
+
+```python
+from zerodev_aa import Context, Signer, Call, KernelVersion
+
+with Context(project_id, chain_id=11155111) as ctx:
+    with Signer.generate() as signer:  # or Signer.local(pk)
+        with ctx.new_account_7702(signer, KernelVersion.V3_3) as account:
+            # account.get_address() == signer's EOA address
+            hash = account.send_user_op([Call(target=account.get_address().bytes)])
+            receipt = account.wait_for_receipt(hash)
+```
+
+> **Full example:** [`examples/gasless-transfer-7702/python/`](examples/gasless-transfer-7702/python/)
 
 ---
 

@@ -2,7 +2,7 @@
 
 import ctypes
 
-from ._ffi import _lib, _Context
+from ._ffi import _lib, _Context, _Account
 from .error import check
 from .types import KernelVersion, GasMiddleware, PaymasterMiddleware
 from .signer import Signer
@@ -47,6 +47,26 @@ class Context:
     ) -> Account:
         """Create a Kernel smart account."""
         return Account._create(self._ptr, signer._ptr, int(version), index)
+
+    def new_account_7702(
+        self,
+        signer: Signer,
+        version: KernelVersion = KernelVersion.V3_3,
+    ) -> Account:
+        """Create an EIP-7702 delegated account.
+
+        The account address IS the signer's EOA address — no CREATE2, no init
+        code, no index. On the first UserOperation the SDK signs an
+        authorization tuple ``(chainId, kernelImpl, EOA-nonce)`` and attaches it
+        via the ``eip7702Auth`` field; later ops skip the auth once the
+        delegation is installed on-chain. Today only ``KernelVersion.V3_3``
+        supports EIP-7702.
+        """
+        ptr = ctypes.POINTER(_Account)()
+        check(_lib.aa_context_new_account_7702(
+            self._ptr, signer._ptr, int(version), ctypes.byref(ptr),
+        ))
+        return Account(ptr)
 
     def close(self) -> None:
         if self._ptr:

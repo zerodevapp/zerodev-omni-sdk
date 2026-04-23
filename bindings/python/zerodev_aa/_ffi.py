@@ -93,6 +93,17 @@ class AaPaymasterResultT(ctypes.Structure):
         ("paymaster_data_len", ctypes.c_size_t),
     ]
 
+# EIP-7702 authorization struct (matches aa_authorization_t in include/aa.h)
+class AaAuthorizationT(ctypes.Structure):
+    _fields_ = [
+        ("chain_id", ctypes.c_uint64),
+        ("address", ctypes.c_uint8 * 20),
+        ("nonce", ctypes.c_uint64),
+        ("y_parity", ctypes.c_uint8),
+        ("r", ctypes.c_uint8 * 32),
+        ("s", ctypes.c_uint8 * 32),
+    ]
+
 # Callback types for custom signer vtable
 SIGN_HASH_FN = ctypes.CFUNCTYPE(
     ctypes.c_int, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint8), ctypes.POINTER(ctypes.c_uint8)
@@ -106,13 +117,24 @@ SIGN_TYPED_DATA_HASH_FN = ctypes.CFUNCTYPE(
 GET_ADDRESS_FN = ctypes.CFUNCTYPE(
     ctypes.c_int, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint8)
 )
+# Optional EIP-7702 authorization callback — NULL when the user's custom signer
+# doesn't implement it (SDK falls back to keccak(0x05 || rlp(...)) + sign_hash).
+SIGN_AUTHORIZATION_FN = ctypes.CFUNCTYPE(
+    ctypes.c_int, ctypes.c_void_p, ctypes.c_uint64, ctypes.POINTER(ctypes.c_uint8),
+    ctypes.c_uint64, ctypes.POINTER(AaAuthorizationT)
+)
 
 class AaSignerVTable(ctypes.Structure):
+    # NOTE: Matches the extended 5-field vtable in include/aa.h (sign_authorization
+    # appended). The SDK reads past the old 4-field layout; consumers MUST rebuild
+    # against this header. Leaving sign_authorization as a NULL pointer (the default)
+    # tells the SDK to fall back to the hash-then-sign path.
     _fields_ = [
         ("sign_hash", SIGN_HASH_FN),
         ("sign_message", SIGN_MESSAGE_FN),
         ("sign_typed_data_hash", SIGN_TYPED_DATA_HASH_FN),
         ("get_address", GET_ADDRESS_FN),
+        ("sign_authorization", SIGN_AUTHORIZATION_FN),
     ]
 
 # Gas/paymaster middleware function pointer types
@@ -165,6 +187,12 @@ _lib.aa_signer_rpc.restype = ctypes.c_int
 _lib.aa_signer_custom.argtypes = [ctypes.POINTER(AaSignerVTable), ctypes.c_void_p, ctypes.POINTER(ctypes.POINTER(_Signer))]
 _lib.aa_signer_custom.restype = ctypes.c_int
 
+_lib.aa_signer_sign_authorization.argtypes = [
+    ctypes.POINTER(_Signer), ctypes.c_uint64, ctypes.POINTER(ctypes.c_uint8),
+    ctypes.c_uint64, ctypes.POINTER(AaAuthorizationT),
+]
+_lib.aa_signer_sign_authorization.restype = ctypes.c_int
+
 _lib.aa_signer_destroy.argtypes = [ctypes.POINTER(_Signer)]
 _lib.aa_signer_destroy.restype = None
 
@@ -174,6 +202,12 @@ _lib.aa_account_create.argtypes = [
     ctypes.POINTER(ctypes.POINTER(_Account))
 ]
 _lib.aa_account_create.restype = ctypes.c_int
+
+_lib.aa_context_new_account_7702.argtypes = [
+    ctypes.POINTER(_Context), ctypes.POINTER(_Signer), ctypes.c_int,
+    ctypes.POINTER(ctypes.POINTER(_Account))
+]
+_lib.aa_context_new_account_7702.restype = ctypes.c_int
 
 _lib.aa_account_get_address.argtypes = [ctypes.POINTER(_Account), ctypes.POINTER(ctypes.c_uint8)]
 _lib.aa_account_get_address.restype = ctypes.c_int

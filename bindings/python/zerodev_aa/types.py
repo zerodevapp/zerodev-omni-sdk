@@ -25,6 +25,21 @@ class Call:
     calldata: bytes = b""
 
 
+@dataclass
+class Authorization:
+    """Signed EIP-7702 authorization tuple.
+
+    Produced by :meth:`Signer.sign_authorization`. Matches the layout of
+    ``aa_authorization_t`` in ``include/aa.h``.
+    """
+    chain_id: int
+    address: bytes   # 20 bytes — delegation target
+    nonce: int
+    y_parity: int    # 0 or 1
+    r: bytes         # 32 bytes
+    s: bytes         # 32 bytes
+
+
 class Address:
     """20-byte Ethereum address."""
 
