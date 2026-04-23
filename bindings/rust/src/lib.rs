@@ -7,14 +7,49 @@ use std::os::raw::{c_char, c_void};
 use std::ptr;
 
 pub use error::{AaError, Result};
-pub use types::{Address, Call, GasMiddleware, Hash, KernelVersion, PaymasterMiddleware, UserOperationReceipt};
+pub use types::{
+    Address, Authorization, Call, GasMiddleware, Hash, KernelVersion, PaymasterMiddleware,
+    UserOperationReceipt,
+};
 
 /// Trait for implementing custom signers (Privy, HSM, MPC, etc.).
+///
+/// The four required methods cover ordinary ECDSA signing. The optional
+/// [`SignerImpl::sign_authorization`] hook lets backends that natively support
+/// EIP-7702 (hardware wallets, MPC networks) handle the authorization tuple
+/// themselves; leaving it unimplemented is safe — the SDK falls back to
+/// hashing `0x05 || rlp([chain_id, address, nonce])` and calling `sign_hash`.
 pub trait SignerImpl: Send + 'static {
     fn sign_hash(&self, hash: &[u8; 32]) -> std::result::Result<[u8; 65], Box<dyn std::error::Error>>;
     fn sign_message(&self, msg: &[u8]) -> std::result::Result<[u8; 65], Box<dyn std::error::Error>>;
     fn sign_typed_data_hash(&self, hash: &[u8; 32]) -> std::result::Result<[u8; 65], Box<dyn std::error::Error>>;
     fn get_address(&self) -> [u8; 20];
+
+    /// Sign an EIP-7702 authorization tuple.
+    ///
+    /// Default: returns an error signalling "not implemented" — combined with
+    /// [`SignerImpl::provides_sign_authorization`] returning `false` (the
+    /// default), the SDK will transparently fall back to hashing the tuple and
+    /// invoking `sign_hash`.
+    ///
+    /// Override both this method and `provides_sign_authorization` to install
+    /// a native implementation.
+    fn sign_authorization(
+        &self,
+        _chain_id: u64,
+        _address: [u8; 20],
+        _nonce: u64,
+    ) -> std::result::Result<Authorization, Box<dyn std::error::Error>> {
+        Err("SignerImpl::sign_authorization not implemented — SDK will fall back to sign_hash".into())
+    }
+
+    /// Returns `true` when this implementation provides a native
+    /// `sign_authorization`. The custom-signer bridge consults this to decide
+    /// whether to populate the FFI vtable's `sign_authorization` slot; a
+    /// `false` slot instructs the SDK to fall back.
+    fn provides_sign_authorization(&self) -> bool {
+        false
+    }
 }
 
 unsafe extern "C" fn custom_sign_hash(ctx: *mut c_void, hash: *const [u8; 32], out: *mut [u8; 65]) -> i32 {
@@ -48,11 +83,46 @@ unsafe extern "C" fn custom_get_address(ctx: *mut c_void, out: *mut [u8; 20]) ->
     0
 }
 
+unsafe extern "C" fn custom_sign_authorization(
+    ctx: *mut c_void,
+    chain_id: u64,
+    address: *const [u8; 20],
+    nonce: u64,
+    out: *mut ffi::aa_authorization_t,
+) -> i32 {
+    let imp = &*(ctx as *const Box<dyn SignerImpl>);
+    match imp.sign_authorization(chain_id, *address, nonce) {
+        Ok(auth) => {
+            (*out).chain_id = auth.chain_id;
+            (*out).address = auth.address;
+            (*out).nonce = auth.nonce;
+            (*out).y_parity = auth.y_parity;
+            (*out).r = auth.r;
+            (*out).s = auth.s;
+            0
+        }
+        Err(_) => 1,
+    }
+}
+
+/// Default vtable — `sign_authorization` is `None` so the SDK falls back to
+/// hashing the EIP-7702 auth tuple and calling `sign_hash`.
 static CUSTOM_VTABLE: ffi::aa_signer_vtable = ffi::aa_signer_vtable {
     sign_hash: custom_sign_hash,
     sign_message: custom_sign_message,
     sign_typed_data_hash: custom_sign_typed_data_hash,
     get_address: custom_get_address,
+    sign_authorization: None,
+};
+
+/// Vtable for custom signers that provide a native `sign_authorization`.
+/// The SDK invokes the callback directly instead of falling back.
+static CUSTOM_VTABLE_WITH_AUTH: ffi::aa_signer_vtable = ffi::aa_signer_vtable {
+    sign_hash: custom_sign_hash,
+    sign_message: custom_sign_message,
+    sign_typed_data_hash: custom_sign_typed_data_hash,
+    get_address: custom_get_address,
+    sign_authorization: Some(custom_sign_authorization),
 };
 
 /// A signer handle (local private key or JSON-RPC endpoint).
@@ -95,19 +165,71 @@ impl Signer {
     }
 
     /// Create a signer from a custom [`SignerImpl`] implementation.
+    ///
+    /// If the implementation overrides
+    /// [`SignerImpl::provides_sign_authorization`] to return `true`, the FFI
+    /// vtable is wired up with a native `sign_authorization` hook; otherwise
+    /// the slot is left `NULL` and the SDK falls back to hashing the auth
+    /// tuple and invoking `sign_hash`.
     pub fn custom<T: SignerImpl>(impl_: T) -> Result<Self> {
+        let has_auth = impl_.provides_sign_authorization();
         let boxed: Box<Box<dyn SignerImpl>> = Box::new(Box::new(impl_));
         let raw = Box::into_raw(boxed) as *mut c_void;
 
+        let vtable: *const ffi::aa_signer_vtable = if has_auth {
+            &CUSTOM_VTABLE_WITH_AUTH
+        } else {
+            &CUSTOM_VTABLE
+        };
+
         let mut s: *mut ffi::aa_signer_t = ptr::null_mut();
         unsafe {
-            let status = ffi::aa_signer_custom(&CUSTOM_VTABLE, raw, &mut s);
+            let status = ffi::aa_signer_custom(vtable, raw, &mut s);
             if status != ffi::AA_OK {
                 let _ = Box::from_raw(raw as *mut Box<dyn SignerImpl>);
                 return Err(error::from_status(status));
             }
         }
         Ok(Self { ptr: s, custom_impl: Some(raw) })
+    }
+
+    /// Sign an EIP-7702 authorization tuple `(chain_id, address, nonce)`.
+    ///
+    /// Works on any signer. For custom signers that did not provide a native
+    /// `sign_authorization` hook, the SDK computes
+    /// `keccak256(0x05 || rlp([chain_id, address, nonce]))` and signs the
+    /// hash via `sign_hash` automatically.
+    pub fn sign_authorization(
+        &self,
+        chain_id: u64,
+        address: [u8; 20],
+        nonce: u64,
+    ) -> Result<Authorization> {
+        let mut out = ffi::aa_authorization_t {
+            chain_id: 0,
+            address: [0u8; 20],
+            nonce: 0,
+            y_parity: 0,
+            r: [0u8; 32],
+            s: [0u8; 32],
+        };
+        unsafe {
+            error::check(ffi::aa_signer_sign_authorization(
+                self.ptr,
+                chain_id,
+                address.as_ptr(),
+                nonce,
+                &mut out,
+            ))?;
+        }
+        Ok(Authorization {
+            chain_id: out.chain_id,
+            address: out.address,
+            nonce: out.nonce,
+            y_parity: out.y_parity,
+            r: out.r,
+            s: out.s,
+        })
     }
 }
 
@@ -201,6 +323,36 @@ impl Context {
                 signer.ptr,
                 version.to_c(),
                 index,
+                &mut acc,
+            ))?;
+        }
+        Ok(Account {
+            ptr: acc,
+            _ctx: self,
+        })
+    }
+
+    /// Create a Kernel smart account using EIP-7702 delegation.
+    ///
+    /// The account's address is the signer's EOA address — there is no
+    /// CREATE2, no init code, and no index. On the first UserOperation the
+    /// SDK signs an authorization tuple `(chain_id, Kernel implementation for
+    /// version, EOA nonce)` and attaches it via the `eip7702Auth` field;
+    /// subsequent UserOps skip the authorization once delegation is installed
+    /// on-chain.
+    ///
+    /// Today only [`KernelVersion::V3_3`] supports EIP-7702.
+    pub fn new_account_7702(
+        &self,
+        signer: &Signer,
+        version: KernelVersion,
+    ) -> Result<Account<'_>> {
+        let mut acc: *mut ffi::aa_account_t = ptr::null_mut();
+        unsafe {
+            error::check(ffi::aa_context_new_account_7702(
+                self.ptr,
+                signer.ptr,
+                version.to_c(),
                 &mut acc,
             ))?;
         }

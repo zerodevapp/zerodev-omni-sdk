@@ -65,12 +65,41 @@ pub(crate) type aa_paymaster_fn = Option<
     ) -> aa_status,
 >;
 
+/// EIP-7702 authorization tuple produced by `aa_signer_sign_authorization`.
+///
+/// The signature (`y_parity`, `r`, `s`) covers
+/// `keccak256(0x05 || rlp([chainId, address, nonce]))`.
+#[repr(C)]
+pub(crate) struct aa_authorization_t {
+    pub chain_id: u64,
+    pub address: [u8; 20],
+    pub nonce: u64,
+    pub y_parity: u8,
+    pub r: [u8; 32],
+    pub s: [u8; 32],
+}
+
+/// Custom-signer vtable.
+///
+/// `sign_authorization` is optional — leave `None` to let the SDK fall back to
+/// hashing the EIP-7702 auth tuple and invoking `sign_hash`. The trailing slot
+/// was appended to the original 4-field layout; consumers must recompile
+/// against this header before linking.
 #[repr(C)]
 pub(crate) struct aa_signer_vtable {
     pub sign_hash: unsafe extern "C" fn(*mut c_void, *const [u8; 32], *mut [u8; 65]) -> i32,
     pub sign_message: unsafe extern "C" fn(*mut c_void, *const u8, usize, *mut [u8; 65]) -> i32,
     pub sign_typed_data_hash: unsafe extern "C" fn(*mut c_void, *const [u8; 32], *mut [u8; 65]) -> i32,
     pub get_address: unsafe extern "C" fn(*mut c_void, *mut [u8; 20]) -> i32,
+    pub sign_authorization: Option<
+        unsafe extern "C" fn(
+            *mut c_void,
+            u64,
+            *const [u8; 20],
+            u64,
+            *mut aa_authorization_t,
+        ) -> i32,
+    >,
 }
 
 extern "C" {
@@ -134,12 +163,29 @@ extern "C" {
 
     pub(crate) fn aa_signer_destroy(signer: *mut aa_signer_t);
 
+    // EIP-7702: authorization signing
+    pub(crate) fn aa_signer_sign_authorization(
+        signer: *mut aa_signer_t,
+        chain_id: u64,
+        address: *const u8,
+        nonce: u64,
+        out: *mut aa_authorization_t,
+    ) -> aa_status;
+
     // Account
     pub(crate) fn aa_account_create(
         ctx: *mut aa_context_t,
         signer: *mut aa_signer_t,
         version: i32,
         index: u32,
+        out: *mut *mut aa_account_t,
+    ) -> aa_status;
+
+    // EIP-7702: create an account whose address is the signer's EOA.
+    pub(crate) fn aa_context_new_account_7702(
+        ctx: *mut aa_context_t,
+        signer: *mut aa_signer_t,
+        version: i32,
         out: *mut *mut aa_account_t,
     ) -> aa_status;
 

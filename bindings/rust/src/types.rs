@@ -167,3 +167,26 @@ pub struct Call {
     /// Calldata bytes.
     pub calldata: Vec<u8>,
 }
+
+/// EIP-7702 authorization tuple.
+///
+/// `y_parity`, `r`, and `s` together form the signature over
+/// `keccak256(0x05 || rlp([chain_id, address, nonce]))`. The SDK produces
+/// these values via [`crate::Signer::sign_authorization`] and attaches them to
+/// the first UserOperation of an EIP-7702 account so the EOA delegates its
+/// code to the Kernel implementation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Authorization {
+    /// Chain ID this authorization is valid on (0 = any chain).
+    pub chain_id: u64,
+    /// Delegation target (Kernel implementation address).
+    pub address: [u8; 20],
+    /// EOA nonce at the time of signing.
+    pub nonce: u64,
+    /// Signature y-parity (0 or 1).
+    pub y_parity: u8,
+    /// Signature r component.
+    pub r: [u8; 32],
+    /// Signature s component.
+    pub s: [u8; 32],
+}

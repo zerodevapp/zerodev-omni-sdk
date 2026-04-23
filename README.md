@@ -133,6 +133,25 @@ let hash = account.send_user_op(&[Call { target: addr, value: [0u8; 32], calldat
 let receipt = account.wait_for_user_operation_receipt(&hash, 0, 0)?;
 ```
 
+### EIP-7702 delegation
+
+Delegate the EOA's code to a Kernel implementation so its address IS the
+smart-account address — no CREATE2, no index. The SDK signs an authorization
+tuple on the first UserOp and attaches it via `eip7702Auth`; subsequent UserOps
+omit the authorization once delegation is installed.
+
+```rust
+let signer = Signer::generate()?; // or Signer::local(&pk)? / Signer::custom(..)?
+let account = ctx.new_account_7702(&signer, KernelVersion::V3_3)?;
+let hash = account.send_user_op(&[Call { target: account.get_address()?, value: [0u8; 32], calldata: vec![] }])?;
+```
+
+Custom signers may override `SignerImpl::sign_authorization` (and
+`provides_sign_authorization` returning `true`) to implement EIP-7702 natively;
+otherwise the SDK falls back to hashing the tuple and calling `sign_hash`.
+
+> **Full example:** [`examples/gasless-transfer-7702/rust/`](examples/gasless-transfer-7702/rust/)
+
 ### Custom Signers
 ```rust
 let signer = Signer::custom(MySignerImpl)?;  // implements SignerImpl trait

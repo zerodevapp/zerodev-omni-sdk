@@ -1,4 +1,7 @@
-use zerodev_aa::{Address, Call, Context, Signer, GasMiddleware, Hash, KernelVersion, PaymasterMiddleware, UserOperationReceipt};
+use zerodev_aa::{
+    Address, Call, Context, GasMiddleware, Hash, KernelVersion, PaymasterMiddleware, Signer,
+    UserOperationReceipt,
+};
 
 /// E2E test: sends a zero-value UserOp to self on Sepolia via ZeroDev.
 ///
@@ -79,4 +82,78 @@ fn send_userop_sepolia() {
     assert!(!receipt.user_op_hash.is_empty(), "userOpHash must be present");
     assert!(!receipt.sender.is_empty(), "sender must be present");
     eprintln!("WaitForUserOperationReceipt SUCCESS!");
+}
+
+/// E2E test: EIP-7702 delegation — a freshly-generated EOA signs an
+/// authorization tuple on the first UserOp and the SDK attaches it via
+/// `eip7702Auth`, installing the Kernel delegation on-chain.
+///
+/// Requires environment variable:
+///   ZERODEV_PROJECT_ID — ZeroDev project ID (paymaster sponsors the UserOp)
+///
+/// Run via: make test-rust-live
+#[test]
+fn live_7702_sponsored_userop() {
+    let project_id = match std::env::var("ZERODEV_PROJECT_ID") {
+        Ok(v) if !v.is_empty() => v,
+        _ => {
+            eprintln!("ZERODEV_PROJECT_ID not set, skipping live 7702 test");
+            return;
+        }
+    };
+
+    let chain_id: u64 = 11155111; // Sepolia
+
+    // Step 1: Create context with ZeroDev gas + paymaster (gasless)
+    let ctx = Context::new(
+        &project_id,
+        "",
+        "",
+        chain_id,
+        GasMiddleware::ZeroDev,
+        PaymasterMiddleware::ZeroDev,
+    )
+    .expect("Context::new failed");
+    eprintln!("[7702] Context created");
+
+    // Step 2: Generate a fresh EOA so the delegation-install path is exercised.
+    let signer = Signer::generate().expect("Signer::generate failed");
+
+    // Step 3: Create 7702 account (sender == EOA)
+    let account = ctx
+        .new_account_7702(&signer, KernelVersion::V3_3)
+        .expect("new_account_7702 failed");
+
+    let addr: Address = account.get_address().expect("get_address failed");
+    eprintln!("[7702] Account (EOA) address: {addr}");
+
+    // Step 4: Build a no-op call (send 0 ETH to self)
+    let calls = vec![Call {
+        target: addr,
+        value: [0u8; 32],
+        calldata: vec![],
+    }];
+
+    // Step 5: Send UserOp — SDK signs + attaches the auth tuple internally
+    let hash: Hash = account
+        .send_user_op(&calls)
+        .expect("send_user_op (7702) failed");
+    eprintln!("[7702] UserOp hash: {hash}");
+    assert!(!hash.is_zero(), "UserOp hash must not be all zeros");
+
+    // Step 6: Wait for receipt and assert success
+    let receipt: UserOperationReceipt = account
+        .wait_for_user_operation_receipt(&hash, 0, 0)
+        .expect("wait_for_user_operation_receipt failed");
+    eprintln!(
+        "[7702] Receipt: success={} sender={} userOpHash={} actualGasUsed={}",
+        receipt.success, receipt.sender, receipt.user_op_hash, receipt.actual_gas_used,
+    );
+    if let Some(ref reason) = receipt.reason {
+        eprintln!("[7702] Revert reason: {reason}");
+    }
+    assert!(receipt.success, "7702 UserOp execution reverted");
+    assert!(!receipt.user_op_hash.is_empty(), "userOpHash must be present");
+    assert!(!receipt.sender.is_empty(), "sender must be present");
+    eprintln!("[7702] sponsored UserOp SUCCESS!");
 }
