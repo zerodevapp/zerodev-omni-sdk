@@ -63,9 +63,9 @@ test "C API: aa_context_new_account_7702 sponsored UserOp on Sepolia" {
     defer c_api.aa_signer_destroy(signer);
 
     // Step 3: Create 7702 account — sender == signer EOA, no CREATE2
-    // (Kernel v3.3 = version 2; only v3.3 supports EIP-7702 today)
+    // (only Kernel v3.3 supports EIP-7702 today)
     var account: ?*c_api.AccountImpl = null;
-    try std.testing.expectEqual(c_api.Status.ok, c_api.aa_context_new_account_7702(ctx, signer, 2, &account));
+    try std.testing.expectEqual(c_api.Status.ok, c_api.aa_context_new_account_7702(ctx, signer, c_api.AA_KERNEL_V3_3, &account));
     try std.testing.expect(account != null);
     defer _ = c_api.aa_account_destroy(account);
 
