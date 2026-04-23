@@ -122,6 +122,7 @@ typedef struct {
     jmethodID sign_message_mid;
     jmethodID sign_typed_data_hash_mid;
     jmethodID get_address_mid;
+    jmethodID sign_authorization_mid;  /* Optional — may be NULL if not overridden */
 } jni_signer_ctx;
 
 static JNIEnv *get_env(jni_signer_ctx *ctx) {
@@ -198,6 +199,61 @@ static int jni_get_address(void *raw_ctx, uint8_t addr_out[20]) {
     return 0;
 }
 
+/* Bridge Kotlin's Authorization return value into the aa_authorization_t
+ * out-param. Return 1 to signal "fall back" (either null return or exception);
+ * the SDK will then compute keccak256(0x05 || rlp(...)) + sign_hash itself. */
+static int jni_sign_authorization(void *raw_ctx, uint64_t chain_id, const uint8_t address[20],
+                                   uint64_t nonce, aa_authorization_t *out) {
+    jni_signer_ctx *ctx = (jni_signer_ctx *)raw_ctx;
+    JNIEnv *env = get_env(ctx);
+
+    jbyteArray jaddr = (*env)->NewByteArray(env, 20);
+    (*env)->SetByteArrayRegion(env, jaddr, 0, 20, (const jbyte *)address);
+
+    jobject result = (*env)->CallObjectMethod(
+        env, ctx->signer_ref, ctx->sign_authorization_mid,
+        (jlong)chain_id, jaddr, (jlong)nonce);
+    (*env)->DeleteLocalRef(env, jaddr);
+
+    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); return 1; }
+    if (result == NULL) return 1;  /* caller returned null -> fall back */
+
+    /* Extract fields from Kotlin Authorization data class via reflection. */
+    jclass authCls = (*env)->GetObjectClass(env, result);
+    jmethodID get_chain_id = (*env)->GetMethodID(env, authCls, "getChainId", "()J");
+    jmethodID get_address = (*env)->GetMethodID(env, authCls, "getAddress", "()[B");
+    jmethodID get_nonce = (*env)->GetMethodID(env, authCls, "getNonce", "()J");
+    jmethodID get_y_parity = (*env)->GetMethodID(env, authCls, "getYParity", "()B");
+    jmethodID get_r = (*env)->GetMethodID(env, authCls, "getR", "()[B");
+    jmethodID get_s = (*env)->GetMethodID(env, authCls, "getS", "()[B");
+
+    out->chain_id = (uint64_t)(*env)->CallLongMethod(env, result, get_chain_id);
+    out->nonce = (uint64_t)(*env)->CallLongMethod(env, result, get_nonce);
+    out->y_parity = (uint8_t)(*env)->CallByteMethod(env, result, get_y_parity);
+
+    jbyteArray addr_arr = (jbyteArray)(*env)->CallObjectMethod(env, result, get_address);
+    if (addr_arr != NULL && (*env)->GetArrayLength(env, addr_arr) == 20) {
+        (*env)->GetByteArrayRegion(env, addr_arr, 0, 20, (jbyte *)out->address);
+        (*env)->DeleteLocalRef(env, addr_arr);
+    }
+
+    jbyteArray r_arr = (jbyteArray)(*env)->CallObjectMethod(env, result, get_r);
+    if (r_arr != NULL && (*env)->GetArrayLength(env, r_arr) == 32) {
+        (*env)->GetByteArrayRegion(env, r_arr, 0, 32, (jbyte *)out->r);
+        (*env)->DeleteLocalRef(env, r_arr);
+    }
+
+    jbyteArray s_arr = (jbyteArray)(*env)->CallObjectMethod(env, result, get_s);
+    if (s_arr != NULL && (*env)->GetArrayLength(env, s_arr) == 32) {
+        (*env)->GetByteArrayRegion(env, s_arr, 0, 32, (jbyte *)out->s);
+        (*env)->DeleteLocalRef(env, s_arr);
+    }
+
+    (*env)->DeleteLocalRef(env, authCls);
+    (*env)->DeleteLocalRef(env, result);
+    return 0;
+}
+
 JNIEXPORT jint JNICALL Java_dev_zerodev_aa_NativeLib_nSignerCustom(
     JNIEnv *env, jclass cls, jobject signer_impl, jlongArray out)
 {
@@ -210,6 +266,17 @@ JNIEXPORT jint JNICALL Java_dev_zerodev_aa_NativeLib_nSignerCustom(
     ctx->sign_message_mid = (*env)->GetMethodID(env, implCls, "signMessage", "([B)[B");
     ctx->sign_typed_data_hash_mid = (*env)->GetMethodID(env, implCls, "signTypedDataHash", "([B)[B");
     ctx->get_address_mid = (*env)->GetMethodID(env, implCls, "getAddress", "()[B");
+    ctx->sign_authorization_mid = (*env)->GetMethodID(env, implCls, "signAuthorization",
+        "(J[BJ)Ldev/zerodev/aa/Authorization;");
+
+    /* Check providesSignAuthorization — if false, leave vtable slot NULL so the
+     * SDK handles EIP-7702 via keccak(0x05 || rlp) + sign_hash. */
+    jmethodID provides_mid = (*env)->GetMethodID(env, implCls, "getProvidesSignAuthorization", "()Z");
+    jboolean provides = JNI_FALSE;
+    if (provides_mid != NULL) {
+        provides = (*env)->CallBooleanMethod(env, signer_impl, provides_mid);
+        if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); provides = JNI_FALSE; }
+    }
 
     /* Static vtable — lives for the duration of the signer */
     aa_signer_vtable *vtable = (aa_signer_vtable *)malloc(sizeof(aa_signer_vtable));
@@ -217,6 +284,7 @@ JNIEXPORT jint JNICALL Java_dev_zerodev_aa_NativeLib_nSignerCustom(
     vtable->sign_message = jni_sign_message;
     vtable->sign_typed_data_hash = jni_sign_typed_data_hash;
     vtable->get_address = jni_get_address;
+    vtable->sign_authorization = provides == JNI_TRUE ? jni_sign_authorization : NULL;
 
     aa_signer_t *signer = NULL;
     jint status = (jint)aa_signer_custom(vtable, ctx, &signer);
@@ -268,6 +336,48 @@ JNIEXPORT jint JNICALL Java_dev_zerodev_aa_NativeLib_nAccountCreate(
     jlong ptr = (jlong)(intptr_t)account;
     (*env)->SetLongArrayRegion(env, out, 0, 1, &ptr);
     return status;
+}
+
+JNIEXPORT jint JNICALL Java_dev_zerodev_aa_NativeLib_nAccountCreate7702(
+    JNIEnv *env, jclass cls,
+    jlong ctx_ptr, jlong signer_ptr, jint version, jlongArray out)
+{
+    aa_account_t *account = NULL;
+    jint status = (jint)aa_context_new_account_7702(
+        (aa_context_t *)(intptr_t)ctx_ptr,
+        (aa_signer_t *)(intptr_t)signer_ptr,
+        (aa_kernel_version)version,
+        &account);
+
+    jlong ptr = (jlong)(intptr_t)account;
+    (*env)->SetLongArrayRegion(env, out, 0, 1, &ptr);
+    return status;
+}
+
+/* Layout of out buffer: [y_parity(1) || r(32) || s(32) || chain_id_be(8)] = 73 bytes */
+JNIEXPORT jint JNICALL Java_dev_zerodev_aa_NativeLib_nSignerSignAuthorization(
+    JNIEnv *env, jclass cls,
+    jlong signer_ptr, jlong chain_id, jbyteArray address, jlong nonce, jbyteArray auth_out)
+{
+    uint8_t addr[20];
+    (*env)->GetByteArrayRegion(env, address, 0, 20, (jbyte *)addr);
+
+    aa_authorization_t auth;
+    jint status = (jint)aa_signer_sign_authorization(
+        (aa_signer_t *)(intptr_t)signer_ptr,
+        (uint64_t)chain_id, addr, (uint64_t)nonce, &auth);
+    if (status != 0) return status;
+
+    /* Pack: [y_parity(1) || r(32) || s(32) || chain_id_be(8)] */
+    uint8_t buf[73];
+    buf[0] = auth.y_parity;
+    memcpy(buf + 1, auth.r, 32);
+    memcpy(buf + 33, auth.s, 32);
+    for (int i = 0; i < 8; i++) {
+        buf[65 + i] = (uint8_t)((auth.chain_id >> (56 - 8 * i)) & 0xff);
+    }
+    (*env)->SetByteArrayRegion(env, auth_out, 0, 73, (jbyte *)buf);
+    return 0;
 }
 
 JNIEXPORT jint JNICALL Java_dev_zerodev_aa_NativeLib_nAccountGetAddress(

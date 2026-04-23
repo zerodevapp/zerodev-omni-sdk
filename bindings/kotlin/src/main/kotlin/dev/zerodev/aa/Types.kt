@@ -97,6 +97,70 @@ interface SignerImpl {
     fun signMessage(msg: ByteArray): ByteArray
     fun signTypedDataHash(hash: ByteArray): ByteArray
     fun getAddress(): ByteArray
+
+    /**
+     * Opt in to a native EIP-7702 authorization path. Override to `true` *and*
+     * provide [signAuthorization] when the signing backend has a dedicated
+     * authorization API (e.g. Privy, Turnkey, certain hardware wallets).
+     *
+     * When this returns `false` (the default), the SDK falls back to hashing
+     * `keccak256(0x05 || rlp([chainId, address, nonce]))` and calling [signHash] —
+     * which is correct for any secp256k1 signer.
+     */
+    val providesSignAuthorization: Boolean get() = false
+
+    /**
+     * Optional — sign an EIP-7702 authorization tuple `(chainId, address, nonce)`.
+     *
+     * Only invoked when [providesSignAuthorization] returns `true`. Throwing or
+     * returning a malformed tuple will surface as an [AaException]; the SDK does
+     * NOT fall back at this point.
+     */
+    fun signAuthorization(chainId: Long, address: ByteArray, nonce: Long): Authorization =
+        throw UnsupportedOperationException("signAuthorization not implemented")
+}
+
+/**
+ * EIP-7702 authorization tuple — the signed `(chainId, delegationTarget, nonce)`
+ * that an EOA attaches to a transaction to delegate its code to a contract.
+ */
+data class Authorization(
+    val chainId: Long,
+    /** Delegation target contract — 20 bytes. */
+    val address: ByteArray,
+    val nonce: Long,
+    val yParity: Byte,
+    /** ECDSA r component — 32 bytes. */
+    val r: ByteArray,
+    /** ECDSA s component — 32 bytes. */
+    val s: ByteArray,
+) {
+    init {
+        require(address.size == 20) { "address must be 20 bytes, got ${address.size}" }
+        require(r.size == 32) { "r must be 32 bytes, got ${r.size}" }
+        require(s.size == 32) { "s must be 32 bytes, got ${s.size}" }
+    }
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is Authorization) return false
+        return chainId == other.chainId &&
+            address.contentEquals(other.address) &&
+            nonce == other.nonce &&
+            yParity == other.yParity &&
+            r.contentEquals(other.r) &&
+            s.contentEquals(other.s)
+    }
+
+    override fun hashCode(): Int {
+        var result = chainId.hashCode()
+        result = 31 * result + address.contentHashCode()
+        result = 31 * result + nonce.hashCode()
+        result = 31 * result + yParity.hashCode()
+        result = 31 * result + r.contentHashCode()
+        result = 31 * result + s.contentHashCode()
+        return result
+    }
 }
 
 data class Call(

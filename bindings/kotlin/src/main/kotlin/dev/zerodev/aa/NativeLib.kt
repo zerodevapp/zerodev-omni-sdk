@@ -32,8 +32,28 @@ internal object NativeLib {
         ctxPtr: Long, signerPtr: Long, version: Int, index: Int, out: LongArray,
     ): Int
 
+    /**
+     * Create an EIP-7702 account. Account address is the signer's EOA; no
+     * CREATE2 / init code / index. Today only V3_3 supports 7702.
+     */
+    @JvmStatic external fun nAccountCreate7702(
+        ctxPtr: Long, signerPtr: Long, version: Int, out: LongArray,
+    ): Int
+
     @JvmStatic external fun nAccountGetAddress(accountPtr: Long, addrOut: ByteArray): Int
     @JvmStatic external fun nAccountDestroy(accountPtr: Long): Int
+
+    /* ---- EIP-7702 authorization ---- */
+
+    /**
+     * Sign an EIP-7702 authorization tuple (chainId, delegation-target, nonce).
+     * Works on any signer. Packs output into a 73-byte buffer laid out as:
+     * `[y_parity(1) || r(32) || s(32) || chain_id_be(8)]` (nonce and address
+     * are passthroughs from the caller's args).
+     */
+    @JvmStatic external fun nSignerSignAuthorization(
+        signerPtr: Long, chainId: Long, address: ByteArray, nonce: Long, authOut: ByteArray,
+    ): Int
 
     /* ---- SendUserOp ---- */
     @JvmStatic external fun nSendUserOp(

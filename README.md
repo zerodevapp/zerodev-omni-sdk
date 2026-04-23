@@ -75,6 +75,29 @@ val signer = Signer.custom(object : SignerImpl {
 })
 ```
 
+### EIP-7702 delegation
+
+The account address IS the signer's EOA — no CREATE2, no index. The first
+UserOp signs an authorization tuple delegating the EOA to Kernel v3.3 and
+attaches it via `eip7702Auth`; subsequent ops reuse the delegation.
+
+```kotlin
+Context.create(projectId, chainId = 11155111).use { ctx ->
+    Signer.generate().use { signer ->                    // fresh EOA
+        ctx.newAccount7702(signer, KernelVersion.V3_3).use { account ->
+            val hash = account.sendUserOp(listOf(Call(target = account.getAddress())))
+            account.waitForUserOperationReceipt(hash)
+        }
+    }
+}
+```
+
+Custom signers may override `signAuthorization` (and set
+`providesSignAuthorization = true`) when the backend has a native 7702 path;
+otherwise the SDK falls back to `signHash` over the keccak-256 auth hash.
+
+> **Runnable example:** [`examples/gasless-transfer-7702/kotlin`](examples/gasless-transfer-7702/kotlin/)
+
 > **Full example:** [omni-sdk-android-example](https://github.com/zerodevapp/omni-sdk-android-example) — Jetpack Compose app with Privy embedded wallet + gasless transactions
 
 ---

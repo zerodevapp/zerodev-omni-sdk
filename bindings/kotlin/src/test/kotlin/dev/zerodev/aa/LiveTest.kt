@@ -3,8 +3,42 @@ package dev.zerodev.aa
 import org.junit.jupiter.api.Assumptions
 import org.junit.jupiter.api.Test
 import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class LiveTest {
+    @Test
+    fun test7702SponsoredUserOp() {
+        val projectId = System.getenv("ZERODEV_PROJECT_ID") ?: ""
+        Assumptions.assumeTrue(projectId.isNotEmpty()) { "ZERODEV_PROJECT_ID not set, skipping" }
+
+        val chainId = 11155111L // Sepolia
+
+        Context.create(projectId, chainId = chainId).use { ctx ->
+            // Fresh EOA: 7702 delegates the EOA's code, so the account IS the EOA.
+            Signer.generate().use { signer ->
+                ctx.newAccount7702(signer, KernelVersion.V3_3).use { account ->
+                    val addr = account.getAddress()
+                    println("7702 Account address (= EOA): $addr")
+
+                    val calls = listOf(
+                        Call(target = addr, value = ByteArray(32), calldata = ByteArray(0)),
+                    )
+
+                    val hash = account.sendUserOp(calls)
+                    println("7702 UserOp hash: $hash")
+                    assertFalse(hash.isZero, "UserOp hash must not be all zeros")
+
+                    val receipt = account.waitForUserOperationReceipt(hash)
+                    println("7702 Receipt: success=${receipt.success} sender=${receipt.sender} userOpHash=${receipt.userOpHash} actualGasUsed=${receipt.actualGasUsed}")
+                    assertTrue(receipt.success, "7702 UserOp execution reverted")
+                    assertTrue(receipt.userOpHash.isNotEmpty(), "userOpHash must be present")
+                    assertTrue(receipt.sender.isNotEmpty(), "sender must be present")
+                    println("7702 SponsoredUserOp SUCCESS!")
+                }
+            }
+        }
+    }
+
     @Test
     fun sendUserOpSepolia() {
         val projectId = System.getenv("ZERODEV_PROJECT_ID") ?: ""

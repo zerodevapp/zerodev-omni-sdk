@@ -41,6 +41,35 @@ class Signer private constructor(
         }
     }
 
+    /**
+     * Sign an EIP-7702 authorization tuple `(chainId, delegationTarget, nonce)`.
+     *
+     * Works on any signer. Custom signers that implement [SignerImpl.signAuthorization]
+     * drive this natively; otherwise the SDK falls back to
+     * `keccak256(0x05 || rlp([chainId, address, nonce]))` signed via `signHash`.
+     */
+    fun signAuthorization(chainId: Long, address: ByteArray, nonce: Long): Authorization {
+        check(!closed) { "Signer is closed" }
+        require(address.size == 20) { "address must be 20 bytes, got ${address.size}" }
+        // Packed out: [y_parity(1) || r(32) || s(32) || chainId_be(8)]
+        val buf = ByteArray(1 + 32 + 32 + 8)
+        checkStatus(NativeLib.nSignerSignAuthorization(ptr, chainId, address, nonce, buf))
+
+        val yParity = buf[0]
+        val r = buf.copyOfRange(1, 33)
+        val s = buf.copyOfRange(33, 65)
+        // The JNI layer echoes the chainId so we can confirm it round-trips,
+        // but the caller's chainId is authoritative — use it directly.
+        return Authorization(
+            chainId = chainId,
+            address = address.copyOf(),
+            nonce = nonce,
+            yParity = yParity,
+            r = r,
+            s = s,
+        )
+    }
+
     override fun close() {
         if (!closed) {
             NativeLib.nSignerDestroy(ptr)

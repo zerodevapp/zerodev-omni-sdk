@@ -40,6 +40,22 @@ class Context private constructor(internal val ptr: Long) : AutoCloseable {
         return Account(out[0], this)
     }
 
+    /**
+     * Create an EIP-7702 account. The account address IS the signer's EOA —
+     * no CREATE2, no init code, no index. On the first UserOp the SDK signs
+     * an authorization tuple and attaches it via `eip7702Auth`; subsequent
+     * ops reuse the delegation. Today only [KernelVersion.V3_3] supports 7702.
+     */
+    fun newAccount7702(
+        signer: Signer,
+        version: KernelVersion,
+    ): Account {
+        check(!closed) { "Context is closed" }
+        val out = LongArray(1)
+        checkStatus(NativeLib.nAccountCreate7702(ptr, signer.ptr, version.code, out))
+        return Account(out[0], this)
+    }
+
     override fun close() {
         if (!closed) {
             NativeLib.nContextDestroy(ptr)
