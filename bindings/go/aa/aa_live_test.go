@@ -125,3 +125,89 @@ func TestSendUserOpSepolia(t *testing.T) {
 
 	t.Log("WaitForUserOperationReceipt SUCCESS!")
 }
+
+// TestLive7702SponsoredUserOp exercises the EIP-7702 delegation pipeline on
+// Sepolia: a freshly-generated EOA signs an authorization tuple on the first
+// UserOp and the SDK attaches it via `eip7702Auth`.
+//
+// Requires environment variable:
+//
+//	ZERODEV_PROJECT_ID — ZeroDev project ID (paymaster sponsors the UserOp)
+//
+// Run via: make test-go-live (run tag filters automatically) or
+//
+//	go test -v -run TestLive7702SponsoredUserOp ./aa/
+func TestLive7702SponsoredUserOp(t *testing.T) {
+	projectID := os.Getenv("ZERODEV_PROJECT_ID")
+	if projectID == "" {
+		t.Skip("ZERODEV_PROJECT_ID not set, skipping live test")
+	}
+
+	chainID := uint64(11155111) // Sepolia
+
+	// Step 1: Create context with ZeroDev paymaster (gasless)
+	ctx, err := aa.NewContext(projectID, "", "", chainID, aa.GasZeroDev, aa.PaymasterZeroDev)
+	if err != nil {
+		t.Fatalf("NewContext failed: %v", err)
+	}
+	defer ctx.Close()
+	t.Log("Context created")
+
+	// Step 2: Generate a fresh EOA so delegation install path is exercised
+	signer, err := aa.GenerateSigner()
+	if err != nil {
+		t.Fatalf("GenerateSigner failed: %v", err)
+	}
+	defer signer.Close()
+
+	// Step 3: Create 7702 account (sender == EOA)
+	account, err := ctx.NewAccount7702(signer, aa.KernelV3_3)
+	if err != nil {
+		t.Fatalf("NewAccount7702 failed: %v", err)
+	}
+	defer account.Close()
+
+	addrHex, err := account.GetAddressHex()
+	if err != nil {
+		t.Fatalf("GetAddressHex failed: %v", err)
+	}
+	t.Logf("7702 account (EOA) address: %s", addrHex)
+
+	// Step 4: Build a no-op call (send 0 ETH to self)
+	addr, _ := account.GetAddress()
+	calls := []aa.Call{
+		{
+			Target:   addr,
+			Value:    [32]byte{},
+			Calldata: []byte{},
+		},
+	}
+
+	// Step 5: Send UserOp — the SDK signs + attaches the auth tuple internally
+	hash, err := account.SendUserOp(calls)
+	if err != nil {
+		t.Fatalf("SendUserOp failed: %v", err)
+	}
+
+	hashHex := hex.EncodeToString(hash[:])
+	t.Logf("UserOp hash: 0x%s", hashHex)
+
+	// Step 6: Wait for receipt and assert success
+	receipt, err := account.WaitForUserOperationReceipt(hash, 0, 0)
+	if err != nil {
+		t.Fatalf("WaitForUserOperationReceipt failed: %v", err)
+	}
+
+	t.Logf("Receipt: success=%v userOpHash=%s sender=%s actualGasUsed=%s",
+		receipt.Success, receipt.UserOpHash, receipt.Sender, receipt.ActualGasUsed)
+
+	if !receipt.Success {
+		t.Fatalf("7702 UserOp execution reverted: %s", receipt.Reason)
+	}
+
+	if txHash, ok := receipt.Receipt["transactionHash"].(string); ok {
+		t.Logf("Transaction hash: %s", txHash)
+	}
+
+	t.Log("7702 sponsored UserOp SUCCESS!")
+}

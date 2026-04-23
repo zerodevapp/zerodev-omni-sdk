@@ -31,6 +31,22 @@ cd examples/gasless-transfer/swift && SDKROOT=/Library/Developer/CommandLineTool
 cd examples/gasless-transfer/kotlin && JAVA_HOME=/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home ./gradlew run
 ```
 
+## Gasless Transfer (EIP-7702)
+
+Same flow as above, but the account is the signer's EOA (delegated via
+EIP-7702) rather than a CREATE2-deployed Kernel. No deployment tx needed — the
+SDK signs an authorization tuple and attaches it to the first UserOp.
+
+**Required env vars:**
+```
+ZERODEV_PROJECT_ID=your-project-id
+```
+
+```bash
+# Go
+cd examples/gasless-transfer-7702/go && go run .
+```
+
 ## Privy Signer
 
 Use a Privy embedded wallet as a custom signer — the signing key lives in Privy's infrastructure.

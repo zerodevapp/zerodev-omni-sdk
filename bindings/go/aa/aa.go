@@ -9,13 +9,31 @@ extern int goSignHash(void *ctx, void *hash, void *sig_out);
 extern int goSignMessage(void *ctx, void *msg, size_t msg_len, void *sig_out);
 extern int goSignTypedDataHash(void *ctx, void *hash, void *sig_out);
 extern int goGetAddress(void *ctx, void *addr_out);
+extern int goSignAuthorization(void *ctx, uint64_t chain_id, void *address,
+                                uint64_t nonce, void *out);
 
+// Default vtable — sign_authorization left NULL so the SDK falls back to
+// hashing the EIP-7702 auth tuple and calling sign_hash.
 static inline aa_signer_vtable* get_go_signer_vtable() {
     static aa_signer_vtable vt = {
         (int (*)(void*, const uint8_t[32], uint8_t[65]))goSignHash,
         (int (*)(void*, const uint8_t*, size_t, uint8_t[65]))goSignMessage,
         (int (*)(void*, const uint8_t[32], uint8_t[65]))goSignTypedDataHash,
         (int (*)(void*, uint8_t[20]))goGetAddress,
+        NULL,
+    };
+    return &vt;
+}
+
+// Vtable for custom signers that provide a native SignAuthorization callback.
+// The SDK invokes sign_authorization directly instead of falling back.
+static inline aa_signer_vtable* get_go_signer_vtable_with_auth() {
+    static aa_signer_vtable vt = {
+        (int (*)(void*, const uint8_t[32], uint8_t[65]))goSignHash,
+        (int (*)(void*, const uint8_t*, size_t, uint8_t[65]))goSignMessage,
+        (int (*)(void*, const uint8_t[32], uint8_t[65]))goSignTypedDataHash,
+        (int (*)(void*, uint8_t[20]))goGetAddress,
+        (int (*)(void*, uint64_t, const uint8_t[20], uint64_t, aa_authorization_t*))goSignAuthorization,
     };
     return &vt;
 }
@@ -102,12 +120,29 @@ func RpcSigner(rpcURL string, address [20]byte) (*Signer, error) {
 	return &Signer{ptr: s}, nil
 }
 
+// Authorization is an EIP-7702 authorization tuple. `YParity`, `R`, and `S`
+// together form the signature over keccak256(0x05 || rlp([chainId, address, nonce])).
+type Authorization struct {
+	ChainID uint64
+	Address [20]byte
+	Nonce   uint64
+	YParity uint8
+	R       [32]byte
+	S       [32]byte
+}
+
 // SignerFuncs holds the Go callback functions for a custom signer.
+//
+// SignAuthorization is optional — when nil, the SDK falls back to computing
+// keccak256(0x05 || rlp([chainId, address, nonce])) and invoking SignHash.
+// Provide a native implementation for hardware wallets or MPC backends that
+// expose an EIP-7702-aware signing primitive.
 type SignerFuncs struct {
 	SignHash          func(hash [32]byte) ([65]byte, error)
 	SignMessage       func(msg []byte) ([65]byte, error)
 	SignTypedDataHash func(hash [32]byte) ([65]byte, error)
 	GetAddress        func() [20]byte
+	SignAuthorization func(chainID uint64, address [20]byte, nonce uint64) (Authorization, error)
 }
 
 var (
@@ -191,19 +226,95 @@ func goGetAddress(ctx unsafe.Pointer, addrOut unsafe.Pointer) C.int {
 	return 0
 }
 
+//export goSignAuthorization
+func goSignAuthorization(ctx unsafe.Pointer, chainID C.uint64_t, address unsafe.Pointer, nonce C.uint64_t, out unsafe.Pointer) C.int {
+	id := uint64(uintptr(ctx))
+	val, ok := customSignerRegistry.Load(id)
+	if !ok {
+		return 1
+	}
+	fns := val.(*SignerFuncs)
+	if fns.SignAuthorization == nil {
+		// Should never happen: this stub is only installed in the vtable when
+		// the user provided SignAuthorization. Guard anyway.
+		return 1
+	}
+
+	var addr [20]byte
+	copy(addr[:], unsafe.Slice((*byte)(address), 20))
+
+	auth, err := fns.SignAuthorization(uint64(chainID), addr, uint64(nonce))
+	if err != nil {
+		return 1
+	}
+
+	// Write into the C aa_authorization_t struct (layout defined in aa.h).
+	cAuth := (*C.aa_authorization_t)(out)
+	cAuth.chain_id = C.uint64_t(auth.ChainID)
+	C.memcpy(unsafe.Pointer(&cAuth.address[0]), unsafe.Pointer(&auth.Address[0]), 20)
+	cAuth.nonce = C.uint64_t(auth.Nonce)
+	cAuth.y_parity = C.uint8_t(auth.YParity)
+	C.memcpy(unsafe.Pointer(&cAuth.r[0]), unsafe.Pointer(&auth.R[0]), 32)
+	C.memcpy(unsafe.Pointer(&cAuth.s[0]), unsafe.Pointer(&auth.S[0]), 32)
+	return 0
+}
+
 // CustomSigner creates a signer backed by Go callback functions.
+//
+// If fns.SignAuthorization is non-nil, the SDK will call it directly for
+// EIP-7702 authorization signing. Otherwise the SDK falls back to hashing the
+// auth tuple and invoking fns.SignHash.
 func CustomSigner(fns SignerFuncs) (*Signer, error) {
 	id := customSignerCounter.Add(1)
 	customSignerRegistry.Store(id, &fns)
 
+	vtable := C.get_go_signer_vtable()
+	if fns.SignAuthorization != nil {
+		vtable = C.get_go_signer_vtable_with_auth()
+	}
+
 	var s *C.aa_signer_t
-	status := C.aa_signer_custom(C.get_go_signer_vtable(), unsafe.Pointer(uintptr(id)), &s)
+	status := C.aa_signer_custom(vtable, unsafe.Pointer(uintptr(id)), &s)
 	if status != C.AA_OK {
 		customSignerRegistry.Delete(id)
 		return nil, fmt.Errorf("aa_signer_custom failed: %s (code %d)", C.GoString(C.aa_get_last_error()), int(status))
 	}
 
 	return &Signer{ptr: s, customID: &id}, nil
+}
+
+// SignAuthorization signs an EIP-7702 authorization tuple. Useful for
+// pre-signing flows (hardware wallets, cold storage) where the authorization
+// is attached to a UserOperation assembled elsewhere.
+//
+// Works on any signer type. For custom signers that did not provide a native
+// SignAuthorization callback, the SDK computes
+// keccak256(0x05 || rlp([chainId, address, nonce])) and signs the hash via
+// SignHash automatically.
+func (s *Signer) SignAuthorization(chainID uint64, address [20]byte, nonce uint64) (*Authorization, error) {
+	if s == nil || s.ptr == nil {
+		return nil, fmt.Errorf("signer is nil")
+	}
+
+	cAddr := (*C.uint8_t)(C.malloc(20))
+	defer C.free(unsafe.Pointer(cAddr))
+	C.memcpy(unsafe.Pointer(cAddr), unsafe.Pointer(&address[0]), 20)
+
+	var out C.aa_authorization_t
+	status := C.aa_signer_sign_authorization(s.ptr, C.uint64_t(chainID), cAddr, C.uint64_t(nonce), &out)
+	if status != C.AA_OK {
+		return nil, fmt.Errorf("aa_signer_sign_authorization failed: %s (code %d)", C.GoString(C.aa_get_last_error()), int(status))
+	}
+
+	auth := &Authorization{
+		ChainID: uint64(out.chain_id),
+		Nonce:   uint64(out.nonce),
+		YParity: uint8(out.y_parity),
+	}
+	copy(auth.Address[:], C.GoBytes(unsafe.Pointer(&out.address[0]), 20))
+	copy(auth.R[:], C.GoBytes(unsafe.Pointer(&out.r[0]), 32))
+	copy(auth.S[:], C.GoBytes(unsafe.Pointer(&out.s[0]), 32))
+	return auth, nil
 }
 
 // Close destroys the signer handle.
@@ -286,6 +397,33 @@ func (c *Context) NewAccount(signer *Signer, version KernelVersion, index uint32
 	status := C.aa_account_create(c.ctx, signer.ptr, C.aa_kernel_version(version), C.uint32_t(index), &acc)
 	if status != C.AA_OK {
 		return nil, fmt.Errorf("aa_account_create failed: %s (code %d)", C.GoString(C.aa_get_last_error()), int(status))
+	}
+
+	return &Account{acc: acc, ctx: c}, nil
+}
+
+// NewAccount7702 creates a Kernel smart account using EIP-7702 delegation.
+//
+// The account's address is the signer's EOA address — there is no CREATE2, no
+// init code, and no index. On the first UserOperation the SDK signs an
+// authorization tuple (chainId, Kernel implementation for `version`, EOA nonce)
+// and attaches it via the `eip7702Auth` field; subsequent UserOps skip the
+// authorization once delegation is installed on-chain.
+//
+// Today only KernelV3_3 supports EIP-7702; passing another version returns an
+// error.
+func (c *Context) NewAccount7702(signer *Signer, version KernelVersion) (*Account, error) {
+	if c.ctx == nil {
+		return nil, fmt.Errorf("context is nil")
+	}
+	if signer == nil || signer.ptr == nil {
+		return nil, fmt.Errorf("signer is nil")
+	}
+
+	var acc *C.aa_account_t
+	status := C.aa_context_new_account_7702(c.ctx, signer.ptr, C.aa_kernel_version(version), &acc)
+	if status != C.AA_OK {
+		return nil, fmt.Errorf("aa_context_new_account_7702 failed: %s (code %d)", C.GoString(C.aa_get_last_error()), int(status))
 	}
 
 	return &Account{acc: acc, ctx: c}, nil

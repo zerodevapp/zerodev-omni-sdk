@@ -108,8 +108,26 @@ signer, _ := aa.CustomSigner(aa.SignerFuncs{
     SignMessage:        func(msg []byte) ([65]byte, error) { /* ... */ },
     SignTypedDataHash:  func(hash [32]byte) ([65]byte, error) { /* ... */ },
     GetAddress:         func() [20]byte { /* ... */ },
+    // Optional — omit to let the SDK hash the auth tuple and call SignHash.
+    SignAuthorization:  func(chainID uint64, address [20]byte, nonce uint64) (aa.Authorization, error) { /* ... */ },
 })
 ```
+
+### EIP-7702 delegation
+```go
+// The EOA is the smart account — no CREATE2, no init code, no index.
+// The SDK signs an authorization tuple on the first UserOp and installs
+// delegation on-chain; subsequent UserOps skip the auth automatically.
+signer, _ := aa.GenerateSigner()
+defer signer.Close()
+
+account, _ := ctx.NewAccount7702(signer, aa.KernelV3_3)
+defer account.Close()
+
+hash, _ := account.SendUserOp([]aa.Call{{Target: recipientAddr}})
+```
+
+> **Full example:** [`examples/gasless-transfer-7702/go`](examples/gasless-transfer-7702/go)
 
 ---
 
