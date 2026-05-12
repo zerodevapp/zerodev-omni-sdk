@@ -2,6 +2,11 @@ name: Publish Rust to crates.io
 
 on:
   workflow_dispatch: {}
+  workflow_call: {}
+
+concurrency:
+  group: publish-rust
+  cancel-in-progress: false
 
 jobs:
   native-libs:

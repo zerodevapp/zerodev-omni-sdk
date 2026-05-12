@@ -2,6 +2,11 @@ name: Publish Kotlin to Maven Central
 
 on:
   workflow_dispatch: {}
+  workflow_call: {}
+
+concurrency:
+  group: publish-kotlin
+  cancel-in-progress: false
 
 jobs:
   publish:

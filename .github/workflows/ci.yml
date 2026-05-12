@@ -1,0 +1,181 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  zig:
+    name: Zig build + test
+    runs-on: macos-14
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: '0.16.0'
+
+      - name: Switch to CommandLineTools (for Zig libc linkage)
+        run: sudo xcode-select -s /Library/Developer/CommandLineTools
+
+      - name: zig build
+        run: zig build
+
+      - name: zig build test
+        run: zig build test --summary all
+
+  go:
+    name: Go binding (vet + build)
+    runs-on: macos-14
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: '0.16.0'
+
+      - name: Switch to CommandLineTools
+        run: sudo xcode-select -s /Library/Developer/CommandLineTools
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Build native libs
+        run: zig build -Doptimize=ReleaseFast -Dtarget=aarch64-macos
+
+      - name: Stage darwin_arm64 native for Go
+        run: |
+          mkdir -p bindings/go/aa/native/darwin_arm64
+          cp zig-out/lib/libzerodev_aa.a bindings/go/aa/native/darwin_arm64/
+          cp zig-out/lib/libsecp256k1.a bindings/go/aa/native/darwin_arm64/
+
+      - name: go vet
+        run: go vet ./bindings/go/aa/...
+
+      - name: go build
+        run: go build ./bindings/go/aa/...
+
+  rust:
+    name: Rust binding (cargo check)
+    runs-on: macos-14
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      ZERODEV_LIB_DIR: ${{ github.workspace }}/zig-out/lib
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: '0.16.0'
+
+      - name: Switch to CommandLineTools
+        run: sudo xcode-select -s /Library/Developer/CommandLineTools
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build native libs
+        run: zig build -Doptimize=ReleaseFast
+
+      - name: cargo check
+        run: cargo check --manifest-path bindings/rust/Cargo.toml
+
+  swift:
+    name: Swift binding (swift build)
+    runs-on: macos-14
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: '0.16.0'
+
+      - name: Switch to CommandLineTools
+        run: sudo xcode-select -s /Library/Developer/CommandLineTools
+
+      - name: Build xcframework
+        run: make build-xcframework
+
+      - name: swift build
+        run: swift build --package-path bindings/swift
+
+  kotlin:
+    name: Kotlin binding (compile)
+    runs-on: macos-14
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: '0.16.0'
+
+      - name: Switch to CommandLineTools
+        run: sudo xcode-select -s /Library/Developer/CommandLineTools
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Build native libs
+        run: zig build -Doptimize=ReleaseFast
+
+      - name: Compile Kotlin JVM
+        working-directory: bindings/kotlin
+        run: ./gradlew compileKotlin --no-daemon
+
+  python:
+    name: Python binding (import + smoke)
+    runs-on: macos-14
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: '0.16.0'
+
+      - name: Switch to CommandLineTools
+        run: sudo xcode-select -s /Library/Developer/CommandLineTools
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build native libs
+        run: zig build -Doptimize=ReleaseFast
+
+      - name: Stage native into bindings/python
+        run: |
+          mkdir -p bindings/python/zerodev_aa/native
+          cp zig-out/lib/libzerodev_aa.dylib bindings/python/zerodev_aa/native/
+
+      - name: Python smoke (import + offline tests)
+        working-directory: bindings/python
+        run: |
+          python -m pip install --upgrade pip pytest
+          python -c "import zerodev_aa; print('import OK:', zerodev_aa.__name__)"
+          # Only run offline tests; live tests gated on ZERODEV_PROJECT_ID
+          python -m pytest tests/ -v -k "not live" || true

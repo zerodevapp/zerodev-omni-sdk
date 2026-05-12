@@ -2,6 +2,11 @@ name: Publish native libraries
 
 on:
   workflow_dispatch: {}
+  workflow_call: {}
+
+concurrency:
+  group: publish-native-libs
+  cancel-in-progress: false
 
 jobs:
   publish:

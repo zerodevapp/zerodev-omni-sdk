@@ -2,6 +2,12 @@ name: Publish Go module
 
 on:
   workflow_dispatch: {}
+  workflow_call: {}
+
+# Only one workflow at a time can push to main — serializes the release auto-commits.
+concurrency:
+  group: publish-main
+  cancel-in-progress: false
 
 jobs:
   publish:
@@ -93,6 +99,7 @@ jobs:
 
           git add -f bindings/go/aa/native/
           git commit -m "chore(go): bundle native libs for v${{ env.VERSION }} [skip ci]"
+          git pull --rebase origin main
           git push origin main
 
           git tag "$TAG"

@@ -2,6 +2,11 @@ name: Publish Python to PyPI
 
 on:
   workflow_dispatch: {}
+  workflow_call: {}
+
+concurrency:
+  group: publish-python
+  cancel-in-progress: false
 
 jobs:
   publish:
