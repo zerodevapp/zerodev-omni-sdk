@@ -4,8 +4,7 @@
 //!   keccak256(0x05 || rlp([chainId, address, nonce]))
 
 const std = @import("std");
-const zigeth = @import("zigeth");
-const keccak = zigeth.crypto.keccak;
+const keccak = @import("keccak.zig");
 
 pub const MAGIC: u8 = 0x05;
 

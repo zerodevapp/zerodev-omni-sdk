@@ -1,7 +1,6 @@
 //! Bundler gas estimation via eth_estimateUserOperationGas.
 
 const std = @import("std");
-const zigeth = @import("zigeth");
 const json_rpc = @import("transport");
 
 pub const GasEstimate = struct {

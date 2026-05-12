@@ -1,10 +1,10 @@
 //! ERC-4337 paymaster sponsorship via pm_getPaymasterStubData / pm_getPaymasterData.
 
 const std = @import("std");
-const zigeth = @import("zigeth");
+const primitives = @import("primitives");
 const json_rpc = @import("transport");
 
-const Address = zigeth.primitives.Address;
+const Address = primitives.Address;
 
 pub const StubData = struct {
     paymaster: Address,
@@ -52,7 +52,7 @@ pub fn getPaymasterStubData(
 
     const pm_data_val = obj.get("paymasterData") orelse return error.MissingField;
     if (pm_data_val != .string) return error.UnexpectedResponse;
-    const paymaster_data = try zigeth.utils.hex.hexToBytes(allocator, pm_data_val.string);
+    const paymaster_data = try primitives.hexToBytes(allocator, pm_data_val.string);
 
     var post_op_gas: u128 = 0;
     if (obj.get("paymasterPostOpGasLimit")) |v| {
@@ -93,7 +93,7 @@ pub fn getPaymasterData(
 
     const pm_data_val = obj.get("paymasterData") orelse return error.MissingField;
     if (pm_data_val != .string) return error.UnexpectedResponse;
-    const paymaster_data = try zigeth.utils.hex.hexToBytes(allocator, pm_data_val.string);
+    const paymaster_data = try primitives.hexToBytes(allocator, pm_data_val.string);
 
     return .{
         .paymaster = paymaster,

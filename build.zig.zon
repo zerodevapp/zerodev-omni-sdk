@@ -2,19 +2,13 @@
     .name = .zerodev_omni_sdk,
     .version = "0.1.0",
     .fingerprint = 0x9360ec54c969c532,
-    .minimum_zig_version = "0.15.2",
+    .minimum_zig_version = "0.16.0",
     .dependencies = .{
-        .zigeth = .{
-            .url = "https://github.com/ch4r10t33r/zigeth/archive/v0.4.0.tar.gz",
-            .hash = "zigeth-0.2.1-5mqWFBsFEAAsa4-RVOiEpwfANnk0os50mP-j5ogPPWu8",
-        },
-        // Override zigeth's stale secp256k1 URL (DaviRain-Su repo was deleted).
-        // Pinned to commit cf93d6597d — this tarball hashes to the value zigeth
-        // declares internally, so the override is honored on CI. Tracking main
-        // broke whenever jsign pushed to main (e.g., 01f8df8 upgraded to Zig 0.16).
-        .zig_eth_secp256k1 = .{
-            .url = "https://github.com/jsign/zig-eth-secp256k1/archive/cf93d6597dacbd444b4b55728111c063f0efa962.tar.gz",
-            .hash = "zig_eth_secp256k1-0.1.0-_U97sBjqDACdmkjL_I_1dncMBvOZ0iSxbcMg4pIcVM4P",
+        // zabi 0.18.0 — Ethereum primitives + crypto. Pinned to a specific commit
+        // (the 0.16.0 sync) to avoid drifting whenever main moves. See README.
+        .zabi = .{
+            .url = "https://github.com/Raiden1411/zabi/archive/90508529e0dc3e3e57c872cf2de64a41387b96fe.tar.gz",
+            .hash = "zabi-0.18.0-UB4phuC8RgADi_3hjF2ywVyeXwzhKzruPfuleePQFmb9",
         },
     },
     .paths = .{

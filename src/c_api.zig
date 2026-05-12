@@ -5,11 +5,11 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const zigeth = @import("zigeth");
+const primitives = @import("primitives");
 
-const Address = zigeth.primitives.Address;
-const Hash = zigeth.primitives.Hash;
-const keccak = zigeth.crypto.keccak;
+const Address = primitives.Address;
+const Hash = primitives.Hash;
+const keccak = @import("core/keccak.zig");
 
 // Internal modules (relative imports within the same package)
 const core = @import("core/root.zig");
@@ -444,7 +444,11 @@ pub export fn aa_signer_generate(
 
     const allocator = defaultAllocator();
     var pk: [32]u8 = undefined;
-    std.crypto.random.bytes(&pk);
+    // Zig 0.16 moved randomness into the `std.Io` interface. Use the
+    // single-threaded global Io and prefer `randomSecure` for key generation;
+    // fall back to non-secure `random` if the syscall is unavailable.
+    const io = std.Io.Threaded.global_single_threaded.io();
+    io.randomSecure(&pk) catch io.random(&pk);
 
     const local = LocalSigner.init(allocator, pk) catch {
         setLastError("failed to initialize signer from generated key", .{});
@@ -973,40 +977,40 @@ pub export fn aa_userop_to_json(
 
     const allocator = defaultAllocator();
 
-    // Build JSON string manually
+    // Build JSON string manually. ArrayListUnmanaged in 0.16 dropped the
+    // `.writer(allocator)` adapter — use `.print(allocator, fmt, args)` and
+    // `.appendSlice(allocator, …)` instead.
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     defer buf.deinit(allocator);
-
-    const writer = buf.writer(allocator);
 
     const sender_hex = userop.sender.toHex(allocator) catch return .serialize_failed;
     defer allocator.free(sender_hex);
 
-    const init_code_hex = zigeth.utils.hex.bytesToHex(allocator, userop.init_code) catch return .serialize_failed;
+    const init_code_hex = primitives.bytesToHex(allocator, userop.init_code) catch return .serialize_failed;
     defer allocator.free(init_code_hex);
 
-    const call_data_hex = zigeth.utils.hex.bytesToHex(allocator, userop.call_data) catch return .serialize_failed;
+    const call_data_hex = primitives.bytesToHex(allocator, userop.call_data) catch return .serialize_failed;
     defer allocator.free(call_data_hex);
 
-    const sig_hex = zigeth.utils.hex.bytesToHex(allocator, userop.signature) catch return .serialize_failed;
+    const sig_hex = primitives.bytesToHex(allocator, userop.signature) catch return .serialize_failed;
     defer allocator.free(sig_hex);
 
-    const pm_hex = zigeth.utils.hex.bytesToHex(allocator, userop.paymaster_and_data) catch return .serialize_failed;
+    const pm_hex = primitives.bytesToHex(allocator, userop.paymaster_and_data) catch return .serialize_failed;
     defer allocator.free(pm_hex);
 
-    writer.print(
+    buf.print(allocator,
         \\{{"sender":"{s}","nonce":"0x{x}","initCode":"{s}","callData":"{s}",
     , .{ sender_hex, userop.nonce, init_code_hex, call_data_hex }) catch return .serialize_failed;
 
-    writer.print(
+    buf.print(allocator,
         \\"callGasLimit":"0x{x}","verificationGasLimit":"0x{x}","preVerificationGas":"0x{x}",
     , .{ userop.call_gas_limit, userop.verification_gas_limit, userop.pre_verification_gas }) catch return .serialize_failed;
 
-    writer.print(
+    buf.print(allocator,
         \\"maxFeePerGas":"0x{x}","maxPriorityFeePerGas":"0x{x}",
     , .{ userop.max_fee_per_gas, userop.max_priority_fee_per_gas }) catch return .serialize_failed;
 
-    writer.print(
+    buf.print(allocator,
         \\"paymasterAndData":"{s}","signature":"{s}"
     , .{ pm_hex, sig_hex }) catch return .serialize_failed;
 
@@ -1014,16 +1018,16 @@ pub export fn aa_userop_to_json(
         const addr = Address.fromBytes(auth.address);
         const addr_hex = addr.toHex(allocator) catch return .serialize_failed;
         defer allocator.free(addr_hex);
-        const r_hex = zigeth.utils.hex.bytesToHex(allocator, &auth.r) catch return .serialize_failed;
+        const r_hex = primitives.bytesToHex(allocator, &auth.r) catch return .serialize_failed;
         defer allocator.free(r_hex);
-        const s_hex = zigeth.utils.hex.bytesToHex(allocator, &auth.s) catch return .serialize_failed;
+        const s_hex = primitives.bytesToHex(allocator, &auth.s) catch return .serialize_failed;
         defer allocator.free(s_hex);
-        writer.print(
+        buf.print(allocator,
             \\,"eip7702Auth":{{"chainId":"0x{x}","address":"{s}","nonce":"0x{x}","yParity":"0x{x}","r":"{s}","s":"{s}"}}
         , .{ auth.chain_id, addr_hex, auth.nonce, auth.y_parity, r_hex, s_hex }) catch return .serialize_failed;
     }
 
-    writer.writeAll("}") catch return .serialize_failed;
+    buf.appendSlice(allocator, "}") catch return .serialize_failed;
 
     // Copy to caller-owned buffer
     const result = allocator.alloc(u8, buf.items.len) catch return .out_of_memory;
@@ -1099,7 +1103,7 @@ pub export fn aa_userop_apply_paymaster_json(
     if (pm_data_val != .string) return .apply_json_failed;
 
     const pm_addr = Address.fromHex(pm_addr_val.string) catch return .apply_json_failed;
-    const pm_data = zigeth.utils.hex.hexToBytes(userop.arena.allocator(), pm_data_val.string) catch return .apply_json_failed;
+    const pm_data = primitives.hexToBytes(userop.arena.allocator(), pm_data_val.string) catch return .apply_json_failed;
 
     // paymasterAndData = paymaster(20) ++ data(variable)
     const a = userop.arena.allocator();
@@ -1429,13 +1433,17 @@ pub export fn aa_wait_for_user_operation_receipt(
         return .receipt_failed;
     };
 
+    // Zig 0.16 removed std.Thread.sleep; sleeping is now an Io operation.
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const sleep_duration = std.Io.Duration.fromMilliseconds(@intCast(interval));
+
     // Poll loop
     var elapsed: u64 = 0;
     while (elapsed < timeout) {
         const result = rpc.call("eth_getUserOperationReceipt", .{ .array = params_arr }) catch |err| {
             if (err == error.JsonRpcError) {
                 // Not found yet, keep polling
-                std.Thread.sleep(interval * std.time.ns_per_ms);
+                io.sleep(sleep_duration, .awake) catch {};
                 elapsed += interval;
                 continue;
             }
@@ -1445,7 +1453,7 @@ pub export fn aa_wait_for_user_operation_receipt(
 
         if (result == .null) {
             transport.freeValue(allocator, result);
-            std.Thread.sleep(interval * std.time.ns_per_ms);
+            io.sleep(sleep_duration, .awake) catch {};
             elapsed += interval;
             continue;
         }

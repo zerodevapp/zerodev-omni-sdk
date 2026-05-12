@@ -10,11 +10,9 @@
 //! Or via harness: cd test/infra && node harness.mjs test
 
 const std = @import("std");
-const zigeth = @import("zigeth");
+const primitives = @import("primitives");
 
-const Address = zigeth.primitives.Address;
-const PrivateKey = zigeth.crypto.secp256k1.PrivateKey;
-const Wallet = zigeth.signer.Wallet;
+const Address = primitives.Address;
 
 const core = @import("core");
 const KernelVersion = core.KernelVersion;
@@ -32,7 +30,14 @@ const LocalSigner = @import("signers").local.LocalSigner;
 // ---- Helpers ----
 
 fn getEnvOr(key: []const u8, default: []const u8) []const u8 {
-    return std.posix.getenv(key) orelse default;
+    // Zig 0.16 removed `std.posix.getenv` (and equivalents in std.process).
+    // Fall back to libc — these test binaries already link libc.
+    var buf: [256]u8 = undefined;
+    if (key.len >= buf.len) return default;
+    @memcpy(buf[0..key.len], key);
+    buf[key.len] = 0;
+    const raw = std.c.getenv(buf[0..key.len :0].ptr) orelse return default;
+    return std.mem.span(raw);
 }
 
 fn hexToBytes32(hex: []const u8) ![32]u8 {
@@ -141,15 +146,15 @@ test "e2e: derive Kernel v3.3 address is deterministic" {
     if (pk_hex.len == 0) return;
 
     const pk_bytes = try hexToBytes32(pk_hex);
-    const pk = try PrivateKey.fromBytes(pk_bytes);
-    const wallet = try Wallet.init(allocator, pk);
+    var local = try LocalSigner.init(allocator, pk_bytes);
+    const owner_addr = Address.fromBytes(local.signer().getAddress());
 
-    const addr1 = try create2.getKernelAddress(wallet.address, 0, .v3_3);
-    const addr2 = try create2.getKernelAddress(wallet.address, 0, .v3_3);
+    const addr1 = try create2.getKernelAddress(owner_addr, 0, .v3_3);
+    const addr2 = try create2.getKernelAddress(owner_addr, 0, .v3_3);
     try std.testing.expectEqualSlices(u8, &addr1.bytes, &addr2.bytes);
 
     // Different index should give different address
-    const addr_idx1 = try create2.getKernelAddress(wallet.address, 1, .v3_3);
+    const addr_idx1 = try create2.getKernelAddress(owner_addr, 1, .v3_3);
     try std.testing.expect(!std.mem.eql(u8, &addr1.bytes, &addr_idx1.bytes));
 
     std.log.info("Kernel v3.3 addr[0] first4: {x:0>2}{x:0>2}{x:0>2}{x:0>2}", .{ addr1.bytes[0], addr1.bytes[1], addr1.bytes[2], addr1.bytes[3] });
@@ -168,10 +173,10 @@ test "e2e: get nonce for undeployed account" {
     defer rpc.deinit();
 
     const pk_bytes = try hexToBytes32(pk_hex);
-    const pk = try PrivateKey.fromBytes(pk_bytes);
-    const wallet = try Wallet.init(allocator, pk);
+    var local = try LocalSigner.init(allocator, pk_bytes);
+    const owner_addr = Address.fromBytes(local.signer().getAddress());
 
-    const sender = try create2.getKernelAddress(wallet.address, 0, .v3_3);
+    const sender = try create2.getKernelAddress(owner_addr, 0, .v3_3);
     const nonce = try entrypoint_mod.getNonce(&rpc, allocator, core.ENTRY_POINT_V07, sender, 0);
 
     try std.testing.expectEqual(@as(u256, 0), nonce);
@@ -472,7 +477,7 @@ test "e2e: full pipeline — build, estimate, sign, send UserOp" {
     while (attempts < 30) : (attempts += 1) {
         receipt_opt = try bundler_mod.getUserOperationReceipt(&bundler, allocator, op_hash_hex);
         if (receipt_opt != null) break;
-        std.Thread.sleep(500 * std.time.ns_per_ms);
+        std.Io.Threaded.global_single_threaded.io().sleep(std.Io.Duration.fromMilliseconds(500), .awake) catch {};
     }
 
     if (receipt_opt) |receipt| {
@@ -592,7 +597,7 @@ test "e2e: second UserOp (no init_code) on deployed account" {
     while (attempts < 30) : (attempts += 1) {
         receipt_opt = try bundler_mod.getUserOperationReceipt(&bundler, allocator, op_hash_hex);
         if (receipt_opt != null) break;
-        std.Thread.sleep(500 * std.time.ns_per_ms);
+        std.Io.Threaded.global_single_threaded.io().sleep(std.Io.Duration.fromMilliseconds(500), .awake) catch {};
     }
 
     if (receipt_opt) |receipt| {

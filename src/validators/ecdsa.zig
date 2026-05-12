@@ -4,13 +4,13 @@
 //! contract metadata (address, nonce key, enable data, stub signature).
 
 const std = @import("std");
-const zigeth = @import("zigeth");
+const primitives = @import("primitives");
 const Validator = @import("Validator.zig").Validator;
 const SignError = @import("Validator.zig").SignError;
 const signers = @import("signers");
 const Signer = signers.Signer;
 
-const Address = zigeth.primitives.Address;
+const Address = primitives.Address;
 
 /// ECDSA Validator address (shared across all Kernel versions)
 pub const ECDSA_VALIDATOR_ADDR = [20]u8{

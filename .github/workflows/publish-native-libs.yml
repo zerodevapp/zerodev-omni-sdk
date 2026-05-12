@@ -21,7 +21,7 @@ jobs:
       - name: Install Zig
         uses: goto-bus-stop/setup-zig@v2
         with:
-          version: '0.15.2'
+          version: '0.16.0'
 
       - name: Switch to CommandLineTools
         run: sudo xcode-select -s /Library/Developer/CommandLineTools
@@ -41,23 +41,23 @@ jobs:
               aarch64-linux-gnu) tag="aarch64-linux" ;;
             esac
 
-            # Repack archives for macOS linker compatibility
+            # Repack archives for macOS linker compatibility. zabi (since
+            # 0.18) bundles secp256k1 into std.crypto, so we no longer ship a
+            # separate libsecp256k1.a archive.
             if [[ "$target" == *macos* ]]; then
-              for lib in libzerodev_aa.a libsecp256k1.a; do
-                tmpdir=$(mktemp -d)
-                cd "$tmpdir"
-                ar x "$GITHUB_WORKSPACE/zig-out/lib/$lib"
-                chmod 644 *.o
-                libtool -static -o "$GITHUB_WORKSPACE/zig-out/lib/$lib" *.o 2>/dev/null
-                cd "$GITHUB_WORKSPACE"
-                rm -rf "$tmpdir"
-              done
+              tmpdir=$(mktemp -d)
+              cd "$tmpdir"
+              ar x "$GITHUB_WORKSPACE/zig-out/lib/libzerodev_aa.a"
+              chmod 644 *.o
+              libtool -static -o "$GITHUB_WORKSPACE/zig-out/lib/libzerodev_aa.a" *.o 2>/dev/null
+              cd "$GITHUB_WORKSPACE"
+              rm -rf "$tmpdir"
             fi
 
-            # Package: tarball with .a files + header
+            # Package: tarball with .a file + header
             mkdir -p dist
             tar czf "dist/zerodev-aa-native-${tag}.tar.gz" \
-              -C zig-out/lib libzerodev_aa.a libsecp256k1.a \
+              -C zig-out/lib libzerodev_aa.a \
               -C "$GITHUB_WORKSPACE" include/aa.h
 
             echo "Packaged: dist/zerodev-aa-native-${tag}.tar.gz"
@@ -89,6 +89,5 @@ jobs:
           **Platforms:** macOS (arm64, x86_64), Linux (arm64, x86_64)
 
           Each tarball contains:
-          - \`libzerodev_aa.a\` — main SDK
-          - \`libsecp256k1.a\` — crypto dependency
+          - \`libzerodev_aa.a\` — main SDK (with secp256k1 bundled via zabi)
           - \`include/aa.h\` — C header"

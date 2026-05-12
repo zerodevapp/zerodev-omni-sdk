@@ -322,7 +322,7 @@ For C — or if you want to build any binding locally:
 
 ### Prerequisites
 
-- [Zig 0.15+](https://ziglang.org/download/)
+- [Zig 0.16+](https://ziglang.org/download/)
 - macOS: `brew install secp256k1`
 - A [ZeroDev](https://zerodev.app) project ID
 

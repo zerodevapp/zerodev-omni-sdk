@@ -1,10 +1,10 @@
 //! EntryPoint v0.7 nonce queries via eth_call.
 
 const std = @import("std");
-const zigeth = @import("zigeth");
+const primitives = @import("primitives");
 
-const Address = zigeth.primitives.Address;
-const keccak = zigeth.crypto.keccak;
+const Address = primitives.Address;
+const keccak = @import("keccak.zig");
 
 pub fn parseHex(comptime T: type, hex: []const u8) !T {
     const stripped = if (hex.len >= 2 and hex[0] == '0' and (hex[1] == 'x' or hex[1] == 'X'))
@@ -37,13 +37,15 @@ pub fn getNonce(
     key: u192,
 ) !u256 {
     const calldata = buildGetNonceCalldata(sender, key);
-    const calldata_hex = try zigeth.utils.hex.bytesToHex(allocator, &calldata);
+    const calldata_hex = try primitives.bytesToHex(allocator, &calldata);
     defer allocator.free(calldata_hex);
 
-    var call_obj = std.json.ObjectMap.init(allocator);
-    defer call_obj.deinit();
-    try call_obj.put("to", .{ .string = entry_point_hex });
-    try call_obj.put("data", .{ .string = calldata_hex });
+    // ObjectMap became `StringArrayHashMapUnmanaged(Value)` in Zig 0.16 —
+    // initialize empty and pass the allocator on every mutation.
+    var call_obj: std.json.ObjectMap = .empty;
+    defer call_obj.deinit(allocator);
+    try call_obj.put(allocator, "to", .{ .string = entry_point_hex });
+    try call_obj.put(allocator, "data", .{ .string = calldata_hex });
 
     var params_arr = std.json.Array.init(allocator);
     defer params_arr.deinit();

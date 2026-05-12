@@ -13,7 +13,14 @@ const std = @import("std");
 const c_api = @import("c_api");
 
 fn getEnvOr(key: []const u8, default: []const u8) []const u8 {
-    return std.posix.getenv(key) orelse default;
+    // Zig 0.16 removed `std.posix.getenv` (and equivalents in std.process).
+    // Fall back to libc — these test binaries already link libc.
+    var buf: [256]u8 = undefined;
+    if (key.len >= buf.len) return default;
+    @memcpy(buf[0..key.len], key);
+    buf[key.len] = 0;
+    const raw = std.c.getenv(buf[0..key.len :0].ptr) orelse return default;
+    return std.mem.span(raw);
 }
 
 fn hexToBytes32(hex: []const u8) ![32]u8 {

@@ -4,11 +4,11 @@
 //!   userOpHash = keccak256(abi.encode(keccak256(packedUserOp), entryPoint, chainId))
 
 const std = @import("std");
-const zigeth = @import("zigeth");
+const primitives = @import("primitives");
 
-const Address = zigeth.primitives.Address;
-const Hash = zigeth.primitives.Hash;
-const keccak = zigeth.crypto.keccak;
+const Address = primitives.Address;
+const Hash = primitives.Hash;
+const keccak = @import("keccak.zig");
 const authz = @import("authorization.zig");
 
 pub const UserOp = struct {
@@ -29,7 +29,9 @@ pub const UserOp = struct {
     /// Serialize this UserOp to a JSON object in the ERC-4337 v0.7 RPC format.
     /// The caller must free the returned value via json_rpc.freeValue().
     pub fn toJsonValue(self: UserOp, allocator: std.mem.Allocator, signature: []const u8) !std.json.Value {
-        var obj = std.json.ObjectMap.init(allocator);
+        // ObjectMap is unmanaged in Zig 0.16 — initialize via `.empty` and
+        // pass the allocator to every mutation.
+        var obj: std.json.ObjectMap = .empty;
         errdefer {
             var it = obj.iterator();
             while (it.next()) |entry| {
@@ -37,91 +39,91 @@ pub const UserOp = struct {
                 // values are string literals or allocated strings
                 if (entry.value_ptr.* == .string) allocator.free(entry.value_ptr.string);
             }
-            obj.deinit();
+            obj.deinit(allocator);
         }
 
         // sender
         const sender_hex = try self.sender.toHex(allocator);
-        try obj.put(try allocator.dupe(u8, "sender"), .{ .string = sender_hex });
+        try obj.put(allocator, try allocator.dupe(u8, "sender"), .{ .string = sender_hex });
 
         // nonce
         const nonce_hex = try std.fmt.allocPrint(allocator, "0x{x}", .{self.nonce});
-        try obj.put(try allocator.dupe(u8, "nonce"), .{ .string = nonce_hex });
+        try obj.put(allocator, try allocator.dupe(u8, "nonce"), .{ .string = nonce_hex });
 
         // factory + factoryData (v0.7 splits initCode)
         if (self.init_code.len >= 20) {
             const factory_addr = Address.fromBytes(self.init_code[0..20].*);
             const factory_hex = try factory_addr.toHex(allocator);
-            try obj.put(try allocator.dupe(u8, "factory"), .{ .string = factory_hex });
-            const factory_data_hex = try zigeth.utils.hex.bytesToHex(allocator, self.init_code[20..]);
-            try obj.put(try allocator.dupe(u8, "factoryData"), .{ .string = factory_data_hex });
+            try obj.put(allocator, try allocator.dupe(u8, "factory"), .{ .string = factory_hex });
+            const factory_data_hex = try primitives.bytesToHex(allocator, self.init_code[20..]);
+            try obj.put(allocator, try allocator.dupe(u8, "factoryData"), .{ .string = factory_data_hex });
         }
 
         // callData
-        const call_data_hex = try zigeth.utils.hex.bytesToHex(allocator, self.call_data);
-        try obj.put(try allocator.dupe(u8, "callData"), .{ .string = call_data_hex });
+        const call_data_hex = try primitives.bytesToHex(allocator, self.call_data);
+        try obj.put(allocator, try allocator.dupe(u8, "callData"), .{ .string = call_data_hex });
 
         // gas limits
         const cgl_hex = try std.fmt.allocPrint(allocator, "0x{x}", .{self.call_gas_limit});
-        try obj.put(try allocator.dupe(u8, "callGasLimit"), .{ .string = cgl_hex });
+        try obj.put(allocator, try allocator.dupe(u8, "callGasLimit"), .{ .string = cgl_hex });
 
         const vgl_hex = try std.fmt.allocPrint(allocator, "0x{x}", .{self.verification_gas_limit});
-        try obj.put(try allocator.dupe(u8, "verificationGasLimit"), .{ .string = vgl_hex });
+        try obj.put(allocator, try allocator.dupe(u8, "verificationGasLimit"), .{ .string = vgl_hex });
 
         const pvg_hex = try std.fmt.allocPrint(allocator, "0x{x}", .{self.pre_verification_gas});
-        try obj.put(try allocator.dupe(u8, "preVerificationGas"), .{ .string = pvg_hex });
+        try obj.put(allocator, try allocator.dupe(u8, "preVerificationGas"), .{ .string = pvg_hex });
 
         const mfpg_hex = try std.fmt.allocPrint(allocator, "0x{x}", .{self.max_fee_per_gas});
-        try obj.put(try allocator.dupe(u8, "maxFeePerGas"), .{ .string = mfpg_hex });
+        try obj.put(allocator, try allocator.dupe(u8, "maxFeePerGas"), .{ .string = mfpg_hex });
 
         const mppfg_hex = try std.fmt.allocPrint(allocator, "0x{x}", .{self.max_priority_fee_per_gas});
-        try obj.put(try allocator.dupe(u8, "maxPriorityFeePerGas"), .{ .string = mppfg_hex });
+        try obj.put(allocator, try allocator.dupe(u8, "maxPriorityFeePerGas"), .{ .string = mppfg_hex });
 
         // paymaster fields (v0.7 splits paymasterAndData)
         if (self.paymaster_and_data.len >= 52) {
             const pm_addr = Address.fromBytes(self.paymaster_and_data[0..20].*);
             const pm_hex = try pm_addr.toHex(allocator);
-            try obj.put(try allocator.dupe(u8, "paymaster"), .{ .string = pm_hex });
+            try obj.put(allocator, try allocator.dupe(u8, "paymaster"), .{ .string = pm_hex });
             // Parse 16-byte big-endian gas limits back to integers for compact hex encoding
             const pm_vgl: u128 = @byteSwap(@as(u128, @bitCast(self.paymaster_and_data[20..36].*)));
             const pm_vgl_hex = try std.fmt.allocPrint(allocator, "0x{x}", .{pm_vgl});
-            try obj.put(try allocator.dupe(u8, "paymasterVerificationGasLimit"), .{ .string = pm_vgl_hex });
+            try obj.put(allocator, try allocator.dupe(u8, "paymasterVerificationGasLimit"), .{ .string = pm_vgl_hex });
             const pm_pogl: u128 = @byteSwap(@as(u128, @bitCast(self.paymaster_and_data[36..52].*)));
             const pm_pogl_hex = try std.fmt.allocPrint(allocator, "0x{x}", .{pm_pogl});
-            try obj.put(try allocator.dupe(u8, "paymasterPostOpGasLimit"), .{ .string = pm_pogl_hex });
-            const pm_data_hex = try zigeth.utils.hex.bytesToHex(allocator, self.paymaster_and_data[52..]);
-            try obj.put(try allocator.dupe(u8, "paymasterData"), .{ .string = pm_data_hex });
+            try obj.put(allocator, try allocator.dupe(u8, "paymasterPostOpGasLimit"), .{ .string = pm_pogl_hex });
+            const pm_data_hex = try primitives.bytesToHex(allocator, self.paymaster_and_data[52..]);
+            try obj.put(allocator, try allocator.dupe(u8, "paymasterData"), .{ .string = pm_data_hex });
         }
 
         // signature
-        const sig_hex = try zigeth.utils.hex.bytesToHex(allocator, signature);
-        try obj.put(try allocator.dupe(u8, "signature"), .{ .string = sig_hex });
+        const sig_hex = try primitives.bytesToHex(allocator, signature);
+        try obj.put(allocator, try allocator.dupe(u8, "signature"), .{ .string = sig_hex });
 
         // EIP-7702 authorization (optional — viem/ZeroDev bundler shape)
         if (self.authorization) |auth| {
-            var auth_obj = std.json.ObjectMap.init(allocator);
-            errdefer auth_obj.deinit();
+            var auth_obj: std.json.ObjectMap = .empty;
+            errdefer auth_obj.deinit(allocator);
 
             const auth_cid_hex = try std.fmt.allocPrint(allocator, "0x{x}", .{auth.chain_id});
-            try auth_obj.put(try allocator.dupe(u8, "chainId"), .{ .string = auth_cid_hex });
+            try auth_obj.put(allocator, try allocator.dupe(u8, "chainId"), .{ .string = auth_cid_hex });
 
             const auth_addr = Address.fromBytes(auth.address);
             const auth_addr_hex = try auth_addr.toHex(allocator);
-            try auth_obj.put(try allocator.dupe(u8, "address"), .{ .string = auth_addr_hex });
+            try auth_obj.put(allocator, try allocator.dupe(u8, "address"), .{ .string = auth_addr_hex });
 
             const auth_nonce_hex = try std.fmt.allocPrint(allocator, "0x{x}", .{auth.nonce});
-            try auth_obj.put(try allocator.dupe(u8, "nonce"), .{ .string = auth_nonce_hex });
+            try auth_obj.put(allocator, try allocator.dupe(u8, "nonce"), .{ .string = auth_nonce_hex });
 
             const yp_hex = try std.fmt.allocPrint(allocator, "0x{x}", .{auth.y_parity});
-            try auth_obj.put(try allocator.dupe(u8, "yParity"), .{ .string = yp_hex });
+            try auth_obj.put(allocator, try allocator.dupe(u8, "yParity"), .{ .string = yp_hex });
 
-            const r_hex = try zigeth.utils.hex.bytesToHex(allocator, &auth.r);
-            try auth_obj.put(try allocator.dupe(u8, "r"), .{ .string = r_hex });
+            const r_hex = try primitives.bytesToHex(allocator, &auth.r);
+            try auth_obj.put(allocator, try allocator.dupe(u8, "r"), .{ .string = r_hex });
 
-            const s_hex = try zigeth.utils.hex.bytesToHex(allocator, &auth.s);
-            try auth_obj.put(try allocator.dupe(u8, "s"), .{ .string = s_hex });
+            const s_hex = try primitives.bytesToHex(allocator, &auth.s);
+            try auth_obj.put(allocator, try allocator.dupe(u8, "s"), .{ .string = s_hex });
 
-            try obj.put(try allocator.dupe(u8, "eip7702Auth"), .{ .object = auth_obj });
+            try obj.put(allocator, try allocator.dupe(u8, "eip7702Auth"), .{ .object = auth_obj });
         }
 
         return .{ .object = obj };

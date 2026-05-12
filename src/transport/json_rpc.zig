@@ -1,10 +1,10 @@
 //! Minimal JSON-RPC client built on top of our fixed HTTP transport.
 
 const std = @import("std");
-const zigeth = @import("zigeth");
+const primitives = @import("primitives");
 const http_post = @import("http.zig").post;
 
-const Address = zigeth.primitives.Address;
+const Address = primitives.Address;
 
 /// Parse a hex string (with optional 0x prefix) into an integer of any width.
 pub fn parseHex(comptime T: type, hex: []const u8) !T {
@@ -48,7 +48,8 @@ pub fn freeValue(allocator: std.mem.Allocator, value: std.json.Value) void {
                 allocator.free(entry.key_ptr.*);
                 freeValue(allocator, entry.value_ptr.*);
             }
-            o.deinit();
+            // ObjectMap is unmanaged in Zig 0.16 — deinit takes the allocator.
+            o.deinit(allocator);
         },
     }
 }
@@ -88,12 +89,12 @@ pub const Client = struct {
         const id = self.next_id;
         self.next_id += 1;
 
-        var obj = std.json.ObjectMap.init(self.allocator);
-        defer obj.deinit();
-        try obj.put("jsonrpc", .{ .string = "2.0" });
-        try obj.put("method", .{ .string = method });
-        try obj.put("params", params);
-        try obj.put("id", .{ .integer = @intCast(id) });
+        var obj: std.json.ObjectMap = .empty;
+        defer obj.deinit(self.allocator);
+        try obj.put(self.allocator, "jsonrpc", .{ .string = "2.0" });
+        try obj.put(self.allocator, "method", .{ .string = method });
+        try obj.put(self.allocator, "params", params);
+        try obj.put(self.allocator, "id", .{ .integer = @intCast(id) });
 
         const request_json = try std.json.Stringify.valueAlloc(self.allocator, std.json.Value{ .object = obj }, .{});
         defer self.allocator.free(request_json);
@@ -164,7 +165,7 @@ pub const Client = struct {
             return error.InvalidResponse;
         }
         defer self.allocator.free(result.string);
-        return try zigeth.utils.hex.hexToBytes(self.allocator, result.string);
+        return try primitives.hexToBytes(self.allocator, result.string);
     }
 
     pub fn getBalance(self: *Client, address: Address) !u256 {
@@ -206,10 +207,10 @@ fn deepCopy(allocator: std.mem.Allocator, value: std.json.Value) !std.json.Value
             break :blk .{ .array = a };
         },
         .object => |obj| blk: {
-            var o = std.json.ObjectMap.init(allocator);
+            var o: std.json.ObjectMap = .empty;
             var it = obj.iterator();
             while (it.next()) |entry| {
-                try o.put(try allocator.dupe(u8, entry.key_ptr.*), try deepCopy(allocator, entry.value_ptr.*));
+                try o.put(allocator, try allocator.dupe(u8, entry.key_ptr.*), try deepCopy(allocator, entry.value_ptr.*));
             }
             break :blk .{ .object = o };
         },

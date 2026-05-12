@@ -5,9 +5,9 @@
 //!   - Batch call: execMode = 0x01..00, executionCalldata = abi.encode(Execution[])
 
 const std = @import("std");
-const zigeth = @import("zigeth");
+const primitives = @import("primitives");
 
-const Address = zigeth.primitives.Address;
+const Address = primitives.Address;
 
 pub const Execution = struct {
     to: Address,

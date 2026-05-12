@@ -7,7 +7,11 @@ const http = std.http;
 pub fn post(allocator: std.mem.Allocator, url: []const u8, payload: []const u8) ![]u8 {
     const uri = try std.Uri.parse(url);
 
-    var client = http.Client{ .allocator = allocator };
+    // Zig 0.16 requires an `Io` instance to be passed to the HTTP client for
+    // opening TCP connections. Use the single-threaded global Threaded Io.
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var client = http.Client{ .allocator = allocator, .io = io };
     defer client.deinit();
 
     var req = try client.request(.POST, uri, .{
@@ -28,5 +32,5 @@ pub fn post(allocator: std.mem.Allocator, url: []const u8, payload: []const u8) 
     defer allocator.free(decompress_buf);
 
     var reader = response.readerDecompressing(&transfer_buf, &decompress, decompress_buf);
-    return try reader.allocRemaining(allocator, std.io.Limit.limited(10 * 1024 * 1024));
+    return try reader.allocRemaining(allocator, std.Io.Limit.limited(10 * 1024 * 1024));
 }

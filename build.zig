@@ -5,29 +5,30 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const static_only = b.option(bool, "static-only", "Only build static library (skip dynamic — needed for iOS cross-compilation)") orelse false;
 
-    // Get zigeth dependency
-    const zigeth_dep = b.dependency("zigeth", .{
+    // Get zabi dependency (replaces zigeth + zig_eth_secp256k1).
+    const zabi_dep = b.dependency("zabi", .{
         .target = target,
         .optimize = optimize,
     });
-    const zigeth_mod = zigeth_dep.module("zigeth");
-
-    // Get secp256k1 through zigeth's dependency (for native C code linking)
-    const secp256k1_dep = zigeth_dep.builder.dependency("zig_eth_secp256k1", .{
-        .target = target,
-        .optimize = optimize,
-    });
-    const secp256k1_artifact = secp256k1_dep.artifact("secp256k1");
-    b.installArtifact(secp256k1_artifact);
+    const zabi_mod = zabi_dep.module("zabi");
 
     // ---- Internal modules (shared between lib, c_api, and tests) ----
+
+    // Primitives module — Address, Hash, Signature wrappers + hex utils.
+    // Its API mirrors what zigeth used to expose so the rest of the codebase
+    // doesn't need to know about zabi's raw byte types.
+    const primitives_mod = b.createModule(.{
+        .root_source_file = b.path("src/core/primitives.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
 
     const transport_mod = b.createModule(.{
         .root_source_file = b.path("src/transport/json_rpc.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "zigeth", .module = zigeth_mod },
+            .{ .name = "primitives", .module = primitives_mod },
         },
     });
 
@@ -36,7 +37,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "zigeth", .module = zigeth_mod },
+            .{ .name = "zabi", .module = zabi_mod },
+            .{ .name = "primitives", .module = primitives_mod },
             .{ .name = "transport", .module = transport_mod },
         },
     });
@@ -46,7 +48,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "zigeth", .module = zigeth_mod },
+            .{ .name = "zabi", .module = zabi_mod },
+            .{ .name = "primitives", .module = primitives_mod },
             .{ .name = "transport", .module = transport_mod },
         },
     });
@@ -56,7 +59,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "zigeth", .module = zigeth_mod },
+            .{ .name = "zabi", .module = zabi_mod },
+            .{ .name = "primitives", .module = primitives_mod },
             .{ .name = "signers", .module = signers_mod },
         },
     });
@@ -68,7 +72,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    lib_mod.addImport("zigeth", zigeth_mod);
+    lib_mod.addImport("zabi", zabi_mod);
+    lib_mod.addImport("primitives", primitives_mod);
 
     // ---- C API module (for FFI consumers) ----
 
@@ -78,7 +83,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    c_api_mod.addImport("zigeth", zigeth_mod);
+    c_api_mod.addImport("zabi", zabi_mod);
+    c_api_mod.addImport("primitives", primitives_mod);
     c_api_mod.addImport("transport", transport_mod);
     c_api_mod.addImport("signers", signers_mod);
 
@@ -89,7 +95,6 @@ pub fn build(b: *std.Build) void {
         .root_module = c_api_mod,
     });
     static_lib.bundle_compiler_rt = true;
-    static_lib.linkLibrary(secp256k1_artifact);
     b.installArtifact(static_lib);
 
     // Dynamic library (skip for iOS/cross-compilation with -Dstatic-only)
@@ -104,10 +109,10 @@ pub fn build(b: *std.Build) void {
                 .link_libc = true,
             }),
         });
-        dynamic_lib.root_module.addImport("zigeth", zigeth_mod);
+        dynamic_lib.root_module.addImport("zabi", zabi_mod);
+        dynamic_lib.root_module.addImport("primitives", primitives_mod);
         dynamic_lib.root_module.addImport("transport", transport_mod);
         dynamic_lib.root_module.addImport("signers", signers_mod);
-        dynamic_lib.linkLibrary(secp256k1_artifact);
         b.installArtifact(dynamic_lib);
     }
 
@@ -121,14 +126,14 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/root.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
             .imports = &.{
-                .{ .name = "zigeth", .module = zigeth_mod },
+                .{ .name = "zabi", .module = zabi_mod },
+                .{ .name = "primitives", .module = primitives_mod },
                 .{ .name = "signers", .module = signers_mod },
             },
         }),
     });
-    lib_tests.linkLibC();
-    lib_tests.linkLibrary(secp256k1_artifact);
     const run_lib_tests = b.addRunArtifact(lib_tests);
 
     const test_step = b.step("test", "Run unit tests");
@@ -141,8 +146,10 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("test/e2e/full_pipeline.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
             .imports = &.{
-                .{ .name = "zigeth", .module = zigeth_mod },
+                .{ .name = "zabi", .module = zabi_mod },
+                .{ .name = "primitives", .module = primitives_mod },
                 .{ .name = "core", .module = core_mod },
                 .{ .name = "transport", .module = transport_mod },
                 .{ .name = "validators", .module = validators_mod },
@@ -150,8 +157,6 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    e2e_tests.linkLibC();
-    e2e_tests.linkLibrary(secp256k1_artifact);
     const run_e2e_tests = b.addRunArtifact(e2e_tests);
 
     const e2e_step = b.step("test-e2e", "Run E2E tests (requires local Anvil + Alto)");
@@ -164,8 +169,10 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("test/e2e/live_sepolia.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
             .imports = &.{
-                .{ .name = "zigeth", .module = zigeth_mod },
+                .{ .name = "zabi", .module = zabi_mod },
+                .{ .name = "primitives", .module = primitives_mod },
                 .{ .name = "core", .module = core_mod },
                 .{ .name = "transport", .module = transport_mod },
                 .{ .name = "validators", .module = validators_mod },
@@ -173,8 +180,6 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    live_tests.linkLibC();
-    live_tests.linkLibrary(secp256k1_artifact);
     const run_live_tests = b.addRunArtifact(live_tests);
 
     const live_step = b.step("test-live", "Run live tests against ZeroDev Sepolia");
@@ -188,7 +193,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
         .imports = &.{
-            .{ .name = "zigeth", .module = zigeth_mod },
+            .{ .name = "zabi", .module = zabi_mod },
+            .{ .name = "primitives", .module = primitives_mod },
             .{ .name = "transport", .module = transport_mod },
             .{ .name = "signers", .module = signers_mod },
         },
@@ -199,13 +205,12 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("test/e2e/live_c_api.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
             .imports = &.{
                 .{ .name = "c_api", .module = c_api_test_mod },
             },
         }),
     });
-    live_capi_tests.linkLibC();
-    live_capi_tests.linkLibrary(secp256k1_artifact);
     const run_live_capi_tests = b.addRunArtifact(live_capi_tests);
 
     const live_capi_step = b.step("test-live-capi", "Run C API live tests against ZeroDev Sepolia");
@@ -216,13 +221,12 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("test/e2e/live_7702.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
             .imports = &.{
                 .{ .name = "c_api", .module = c_api_test_mod },
             },
         }),
     });
-    live_7702_tests.linkLibC();
-    live_7702_tests.linkLibrary(secp256k1_artifact);
     const run_live_7702_tests = b.addRunArtifact(live_7702_tests);
 
     const live_7702_step = b.step("test-live-7702", "Run EIP-7702 live tests against ZeroDev Sepolia");

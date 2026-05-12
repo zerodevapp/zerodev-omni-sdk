@@ -1,29 +1,28 @@
-//! Local Signer — signs using a private key via zigeth's Wallet.
+//! Local Signer — signs using a private key via zabi's ECDSA Signer.
 //!
-//! Wraps zigeth's secp256k1 Wallet behind the Signer interface.
-//! Handles EIP-191 personal_sign wrapping in signMessage.
+//! Wraps zabi's `Signer` (low-S, RFC 6979 deterministic) behind our Signer
+//! interface. Handles EIP-191 personal_sign wrapping in signMessage.
 
 const std = @import("std");
-const zigeth = @import("zigeth");
+const zabi = @import("zabi");
 const signer_mod = @import("signer.zig");
 const Signer = signer_mod.Signer;
 const Signature = signer_mod.Signature;
 const SignerError = signer_mod.SignerError;
 
-const Wallet = zigeth.signer.Wallet;
-const PrivateKey = zigeth.crypto.secp256k1.PrivateKey;
-const keccak = zigeth.crypto.keccak;
+const ZabiSigner = zabi.crypto.Signer;
+const ZabiSignature = zabi.crypto.signature.Signature;
 
 pub const LocalSigner = struct {
-    wallet: Wallet,
+    inner: ZabiSigner,
     address_bytes: [20]u8,
 
     pub fn init(allocator: std.mem.Allocator, private_key: [32]u8) !LocalSigner {
-        const pk = try PrivateKey.fromBytes(private_key);
-        const wallet = try Wallet.init(allocator, pk);
+        _ = allocator; // zabi's Signer is stack-only — no allocator needed.
+        const inner = try ZabiSigner.init(private_key);
         return .{
-            .wallet = wallet,
-            .address_bytes = wallet.address.bytes,
+            .inner = inner,
+            .address_bytes = inner.address_bytes,
         };
     }
 
@@ -46,13 +45,8 @@ pub const LocalSigner = struct {
 
     fn signHashImpl(ptr: *anyopaque, hash: [32]u8) SignerError!Signature {
         const self: *LocalSigner = @ptrCast(@alignCast(ptr));
-        const h = zigeth.primitives.Hash{ .bytes = hash };
-        const sig = self.wallet.signer.signHash(h) catch return SignerError.SigningFailed;
-        return .{
-            .r = sig.r,
-            .s = sig.s,
-            .v = @intCast(sig.v),
-        };
+        const z_sig = self.inner.sign(hash) catch return SignerError.SigningFailed;
+        return zabiToLocal(z_sig);
     }
 
     fn signMessageImpl(ptr: *anyopaque, message: []const u8) SignerError!Signature {
@@ -73,11 +67,24 @@ pub const LocalSigner = struct {
     }
 };
 
+/// Convert zabi's `Signature{r:u256, s:u256, v:u2}` into our wire format
+/// (`r:[32]u8, s:[32]u8, v:u8`). Apply Ethereum's +27 convention to v.
+fn zabiToLocal(z_sig: ZabiSignature) Signature {
+    var r_bytes: [32]u8 = undefined;
+    var s_bytes: [32]u8 = undefined;
+    std.mem.writeInt(u256, &r_bytes, z_sig.r, .big);
+    std.mem.writeInt(u256, &s_bytes, z_sig.s, .big);
+    return .{
+        .r = r_bytes,
+        .s = s_bytes,
+        // zabi returns 0 or 1 (raw y-parity); Ethereum personal_sign / userOp signatures
+        // historically use 27 or 28. Match the previous zigeth-based behaviour.
+        .v = @as(u8, z_sig.v) + 27,
+    };
+}
+
 test "signAuthorization round-trip: recovered address matches signer" {
     const allocator = std.testing.allocator;
-    const Hash = zigeth.primitives.Hash;
-    const secp = zigeth.crypto.secp256k1;
-    const Sig = zigeth.primitives.Signature;
 
     var pk: [32]u8 = undefined;
     @memset(&pk, 0x11);
@@ -125,13 +132,16 @@ test "signAuthorization round-trip: recovered address matches signer" {
     var hash_bytes: [32]u8 = undefined;
     hasher.final(&hash_bytes);
 
-    const sig = Sig{
-        .r = auth.r,
-        .s = auth.s,
-        .v = auth.y_parity + 27,
-    };
-    const pubkey = try secp.recoverPublicKey(Hash{ .bytes = hash_bytes }, sig);
-    const recovered = pubkey.toAddress();
-    try std.testing.expectEqualSlices(u8, &owner_addr, &recovered.bytes);
+    // Recover via zabi's static recovery helper. y_parity is stored as raw
+    // 0/1, so the recovered signature passes v=y_parity directly.
+    var r_u: u256 = 0;
+    var s_u: u256 = 0;
+    r_u = std.mem.readInt(u256, &auth.r, .big);
+    s_u = std.mem.readInt(u256, &auth.s, .big);
+    const recovered_addr = try ZabiSigner.recoverAddress(.{
+        .r = r_u,
+        .s = s_u,
+        .v = @intCast(auth.y_parity),
+    }, hash_bytes);
+    try std.testing.expectEqualSlices(u8, &owner_addr, &recovered_addr);
 }
-

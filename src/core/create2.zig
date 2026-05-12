@@ -5,11 +5,11 @@
 //!   address = keccak256(0xff ++ factory ++ salt ++ bytecodeHash)[12:]
 
 const std = @import("std");
-const zigeth = @import("zigeth");
+const primitives = @import("primitives");
 
-const Address = zigeth.primitives.Address;
-const Hash = zigeth.primitives.Hash;
-const keccak = zigeth.crypto.keccak;
+const Address = primitives.Address;
+const Hash = primitives.Hash;
+const keccak = @import("keccak.zig");
 const zerodev = @import("root.zig");
 
 /// Compute the keccak256 hash of the Solady ERC1967 minimal proxy initcode

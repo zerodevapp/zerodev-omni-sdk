@@ -4,9 +4,9 @@
 //! compiled-in validators via the C API — no FFI callbacks needed.
 
 const std = @import("std");
-const zigeth = @import("zigeth");
+const primitives = @import("primitives");
 
-const Address = zigeth.primitives.Address;
+const Address = primitives.Address;
 
 pub const SignError = error{
     SigningFailed,

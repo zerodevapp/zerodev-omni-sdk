@@ -10,11 +10,9 @@
 //! Or:      make test-live
 
 const std = @import("std");
-const zigeth = @import("zigeth");
+const primitives = @import("primitives");
 
-const Address = zigeth.primitives.Address;
-const PrivateKey = zigeth.crypto.secp256k1.PrivateKey;
-const Wallet = zigeth.signer.Wallet;
+const Address = primitives.Address;
 
 const core = @import("core");
 const create2 = core.create2;
@@ -52,7 +50,14 @@ fn fmtHash(bytes: []const u8) [64]u8 {
 // ---- Helpers ----
 
 fn getEnvOr(key: []const u8, default: []const u8) []const u8 {
-    return std.posix.getenv(key) orelse default;
+    // Zig 0.16 removed `std.posix.getenv` (and equivalents in std.process).
+    // Fall back to libc — these test binaries already link libc.
+    var buf: [256]u8 = undefined;
+    if (key.len >= buf.len) return default;
+    @memcpy(buf[0..key.len], key);
+    buf[key.len] = 0;
+    const raw = std.c.getenv(buf[0..key.len :0].ptr) orelse return default;
+    return std.mem.span(raw);
 }
 
 fn hexToBytes32(hex: []const u8) ![32]u8 {
@@ -302,7 +307,7 @@ test "live: sponsored UserOp via ZeroDev paymaster" {
     while (attempts < 60) : (attempts += 1) {
         receipt_opt = try bundler_mod.getUserOperationReceipt(&rpc, allocator, op_hash_hex);
         if (receipt_opt != null) break;
-        std.Thread.sleep(2 * std.time.ns_per_s);
+        std.Io.Threaded.global_single_threaded.io().sleep(std.Io.Duration.fromSeconds(2), .awake) catch {};
     }
 
     if (receipt_opt) |receipt| {
