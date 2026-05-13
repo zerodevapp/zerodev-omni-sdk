@@ -60,7 +60,6 @@ jobs:
         run: |
           mkdir -p bindings/go/aa/native/darwin_arm64
           cp zig-out/lib/libzerodev_aa.a bindings/go/aa/native/darwin_arm64/
-          cp zig-out/lib/libsecp256k1.a bindings/go/aa/native/darwin_arm64/
 
       - name: go vet
         run: go vet ./bindings/go/aa/...

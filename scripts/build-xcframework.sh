@@ -21,42 +21,30 @@ build_target() {
     # Build (ignore exit code for iOS — static lib succeeds but dylib link fails)
     DEVELOPER_DIR="$developer_dir" zig build -Doptimize=ReleaseFast -Dtarget="$target" -Dstatic-only=true 2>/dev/null || true
 
-    # Find the built static libs in zig-out or cache
+    # Find the built static lib in zig-out or cache. secp256k1 is bundled inside
+    # libzerodev_aa.a via zabi — no separate archive any more.
     if [ -f "$SDK_ROOT/zig-out/lib/libzerodev_aa.a" ]; then
         cp "$SDK_ROOT/zig-out/lib/libzerodev_aa.a" "$out_dir/"
-        cp "$SDK_ROOT/zig-out/lib/libsecp256k1.a" "$out_dir/"
     else
         echo "    WARNING: zig-out not populated, searching cache..."
-        # Find the most recent arm64/x86_64 .a in cache
         latest=$(find "$SDK_ROOT/.zig-cache" -name "libzerodev_aa.a" -newer "$SDK_ROOT/build.zig" 2>/dev/null | tail -1)
         if [ -n "$latest" ]; then
             cp "$latest" "$out_dir/"
-            # Also find secp256k1
-            secp_dir=$(dirname "$latest")
-            secp=$(find "$secp_dir" -name "libsecp256k1.a" 2>/dev/null || find "$SDK_ROOT/.zig-cache" -name "libsecp256k1.a" -newer "$SDK_ROOT/build.zig" 2>/dev/null | tail -1)
-            [ -n "$secp" ] && cp "$secp" "$out_dir/"
         else
             echo "    ERROR: Could not find built library for $target"
             return 1
         fi
     fi
-    
-    # Repack with Apple libtool for Xcode compatibility
-    for lib in libzerodev_aa.a libsecp256k1.a; do
-        if [ -f "$out_dir/$lib" ]; then
-            tmpdir=$(mktemp -d)
-            cd "$tmpdir"
-            ar x "$out_dir/$lib"
-            chmod 644 *.o 2>/dev/null || true
-            libtool -static -o "$out_dir/$lib" *.o 2>/dev/null
-            cd "$SDK_ROOT"
-            rm -rf "$tmpdir"
-        fi
-    done
-    
-    # Merge into single lib
-    libtool -static -o "$out_dir/libZeroDevAA.a" "$out_dir/libzerodev_aa.a" "$out_dir/libsecp256k1.a" 2>/dev/null
-    
+
+    # Repack with Apple libtool for Xcode compatibility, then expose as libZeroDevAA.a
+    tmpdir=$(mktemp -d)
+    cd "$tmpdir"
+    ar x "$out_dir/libzerodev_aa.a"
+    chmod 644 *.o 2>/dev/null || true
+    libtool -static -o "$out_dir/libZeroDevAA.a" *.o 2>/dev/null
+    cd "$SDK_ROOT"
+    rm -rf "$tmpdir"
+
     echo "  Done: $(lipo -info "$out_dir/libZeroDevAA.a" 2>/dev/null || echo 'built')"
 }
 
@@ -80,18 +68,16 @@ if [ -d "/Applications/Xcode.app" ]; then
             --sysroot "$sdk"
         mkdir -p "$OUT/$target"
         cp "$SDK_ROOT/zig-out/lib/libzerodev_aa.a" "$OUT/$target/"
-        cp "$SDK_ROOT/zig-out/lib/libsecp256k1.a" "$OUT/$target/"
-        # Repack with libtool
-        for lib in libzerodev_aa.a libsecp256k1.a; do
-            tmpdir=$(mktemp -d)
-            cd "$tmpdir"
-            ar x "$OUT/$target/$lib"
-            chmod 644 *.o 2>/dev/null || true
-            libtool -static -o "$OUT/$target/$lib" *.o 2>/dev/null
-            cd "$SDK_ROOT"
-            rm -rf "$tmpdir"
-        done
-        libtool -static -o "$OUT/$target/libZeroDevAA.a" "$OUT/$target/libzerodev_aa.a" "$OUT/$target/libsecp256k1.a" 2>/dev/null
+
+        # Repack with Apple libtool for Xcode compat, expose as libZeroDevAA.a
+        tmpdir=$(mktemp -d)
+        cd "$tmpdir"
+        ar x "$OUT/$target/libzerodev_aa.a"
+        chmod 644 *.o 2>/dev/null || true
+        libtool -static -o "$OUT/$target/libZeroDevAA.a" *.o 2>/dev/null
+        cd "$SDK_ROOT"
+        rm -rf "$tmpdir"
+
         echo "  Done: $(lipo -info "$OUT/$target/libZeroDevAA.a" 2>/dev/null || echo 'built')"
     done
 else

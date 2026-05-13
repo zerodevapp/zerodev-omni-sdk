@@ -51,18 +51,16 @@ jobs:
             zig build -Doptimize=ReleaseFast -Dtarget=$target -Dstatic-only=true
             mkdir -p dist/$target
             cp zig-out/lib/libzerodev_aa.a dist/$target/
-            cp zig-out/lib/libsecp256k1.a dist/$target/
 
-            # Repack with libtool for Xcode compatibility
-            for lib in libzerodev_aa.a libsecp256k1.a; do
-              tmpdir=$(mktemp -d)
-              cd "$tmpdir"
-              ar x "$GITHUB_WORKSPACE/dist/$target/$lib"
-              chmod 644 *.o
-              libtool -static -o "$GITHUB_WORKSPACE/dist/$target/$lib" *.o
-              cd "$GITHUB_WORKSPACE"
-              rm -rf "$tmpdir"
-            done
+            # Repack with libtool for Xcode compatibility (secp256k1 is now
+            # bundled inside libzerodev_aa.a via zabi → no separate archive)
+            tmpdir=$(mktemp -d)
+            cd "$tmpdir"
+            ar x "$GITHUB_WORKSPACE/dist/$target/libzerodev_aa.a"
+            chmod 644 *.o
+            libtool -static -o "$GITHUB_WORKSPACE/dist/$target/libzerodev_aa.a" *.o
+            cd "$GITHUB_WORKSPACE"
+            rm -rf "$tmpdir"
           done
 
       - name: Build iOS targets
@@ -81,27 +79,24 @@ jobs:
               --sysroot "$sdk"
             mkdir -p dist/$target
             cp zig-out/lib/libzerodev_aa.a dist/$target/
-            cp zig-out/lib/libsecp256k1.a dist/$target/
 
             # Repack with libtool for Xcode compatibility
-            for lib in libzerodev_aa.a libsecp256k1.a; do
-              tmpdir=$(mktemp -d)
-              cd "$tmpdir"
-              ar x "$GITHUB_WORKSPACE/dist/$target/$lib"
-              chmod 644 *.o
-              libtool -static -o "$GITHUB_WORKSPACE/dist/$target/$lib" *.o
-              cd "$GITHUB_WORKSPACE"
-              rm -rf "$tmpdir"
-            done
+            tmpdir=$(mktemp -d)
+            cd "$tmpdir"
+            ar x "$GITHUB_WORKSPACE/dist/$target/libzerodev_aa.a"
+            chmod 644 *.o
+            libtool -static -o "$GITHUB_WORKSPACE/dist/$target/libzerodev_aa.a" *.o
+            cd "$GITHUB_WORKSPACE"
+            rm -rf "$tmpdir"
           done
 
       - name: Create merged static libs
         run: |
           for target_dir in dist/aarch64-macos dist/x86_64-macos dist/aarch64-ios dist/aarch64-ios-simulator dist/x86_64-ios-simulator; do
-            if [ -f "$target_dir/libzerodev_aa.a" ] && [ -f "$target_dir/libsecp256k1.a" ]; then
-              libtool -static -o "$target_dir/libZeroDevAA.a" \
-                "$target_dir/libzerodev_aa.a" "$target_dir/libsecp256k1.a" 2>/dev/null
-              echo "Merged: $target_dir/libZeroDevAA.a"
+            if [ -f "$target_dir/libzerodev_aa.a" ]; then
+              # secp256k1 is bundled inside libzerodev_aa.a via zabi — single archive
+              cp "$target_dir/libzerodev_aa.a" "$target_dir/libZeroDevAA.a"
+              echo "Staged: $target_dir/libZeroDevAA.a"
             fi
           done
 

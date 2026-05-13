@@ -19,17 +19,15 @@ build:
 ifeq ($(shell uname),Darwin)
 	@# Repack .a archives with Apple libtool for Xcode compatibility
 	@# (Zig's archiver produces members that aren't 8-byte aligned)
-	@for lib in libzerodev_aa.a libsecp256k1.a; do \
-		if [ -f zig-out/lib/$$lib ]; then \
-			tmpdir=$$(mktemp -d) && \
-			cd "$$tmpdir" && \
-			ar x "$(CURDIR)/zig-out/lib/$$lib" && \
-			chmod 644 *.o && \
-			libtool -static -o "$(CURDIR)/zig-out/lib/$$lib" *.o 2>/dev/null && \
-			cd "$(CURDIR)" && \
-			rm -r "$$tmpdir"; \
-		fi; \
-	done
+	@if [ -f zig-out/lib/libzerodev_aa.a ]; then \
+		tmpdir=$$(mktemp -d) && \
+		cd "$$tmpdir" && \
+		ar x "$(CURDIR)/zig-out/lib/libzerodev_aa.a" && \
+		chmod 644 *.o && \
+		libtool -static -o "$(CURDIR)/zig-out/lib/libzerodev_aa.a" *.o 2>/dev/null && \
+		cd "$(CURDIR)" && \
+		rm -r "$$tmpdir"; \
+	fi
 endif
 
 # Build xcframework for Swift (macOS universal, no unsafeFlags)
@@ -114,8 +112,7 @@ build-kotlin: build
 	clang -shared -o zig-out/lib/libzerodev_aa.dylib \
 		-I"$$JAVA_HOME/include" -I"$$JAVA_HOME/include/darwin" -Iinclude \
 		bindings/kotlin/jni/zerodev_aa_jni.c \
-		-Wl,-force_load,zig-out/lib/libzerodev_aa.a \
-		-Wl,-force_load,zig-out/lib/libsecp256k1.a
+		-Wl,-force_load,zig-out/lib/libzerodev_aa.a
 	cd bindings/kotlin && \
 		JAVA_HOME=$(or $(JAVA_HOME),/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home) \
 		./gradlew build -x test

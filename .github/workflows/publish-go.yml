@@ -59,22 +59,20 @@ jobs:
             rm -rf zig-out
             zig build -Doptimize=ReleaseFast -Dtarget=$zig_target -Dstatic-only=true
 
-            # Repack for macOS linker compatibility
+            # Repack for macOS linker compatibility (secp256k1 is bundled
+            # inside libzerodev_aa.a via zabi — single archive)
             if [[ "$zig_target" == *macos* ]]; then
-              for lib in libzerodev_aa.a libsecp256k1.a; do
-                tmpdir=$(mktemp -d)
-                cd "$tmpdir"
-                ar x "$GITHUB_WORKSPACE/zig-out/lib/$lib"
-                chmod 644 *.o
-                libtool -static -o "$GITHUB_WORKSPACE/zig-out/lib/$lib" *.o 2>/dev/null
-                cd "$GITHUB_WORKSPACE"
-                rm -rf "$tmpdir"
-              done
+              tmpdir=$(mktemp -d)
+              cd "$tmpdir"
+              ar x "$GITHUB_WORKSPACE/zig-out/lib/libzerodev_aa.a"
+              chmod 644 *.o
+              libtool -static -o "$GITHUB_WORKSPACE/zig-out/lib/libzerodev_aa.a" *.o 2>/dev/null
+              cd "$GITHUB_WORKSPACE"
+              rm -rf "$tmpdir"
             fi
 
             mkdir -p "$NATIVE_DIR/$go_dir"
             cp zig-out/lib/libzerodev_aa.a "$NATIVE_DIR/$go_dir/"
-            cp zig-out/lib/libsecp256k1.a "$NATIVE_DIR/$go_dir/"
           done
 
           echo "=== Bundled native libraries ==="
