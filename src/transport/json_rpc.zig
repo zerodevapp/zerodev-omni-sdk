@@ -56,7 +56,16 @@ pub fn freeValue(allocator: std.mem.Allocator, value: std.json.Value) void {
 
 /// C-compatible HTTP transport callback.
 /// Host implements: POST url with body, return response.
-/// Response must be heap-allocated; the SDK copies and the caller frees.
+///
+/// **Allocator contract (audit F-02):** the response buffer MUST be either
+///   (a) allocated via `aa_alloc` (or equivalently, libc `malloc`), in which
+///       case the SDK frees it via libc `free`, or
+///   (b) allocated with any other allocator (Go runtime, Rust global,
+///       Python, etc.), in which case the host MUST register a matching
+///       `HttpFreeFn` via `aa_context_set_http_free_fn`.
+///
+/// Mixing — handing back a Go/Rust pointer with no free fn registered — is
+/// undefined behavior; on macOS libsystem_malloc aborts the process.
 pub const HttpFn = *const fn (
     ?*anyopaque, // user context
     [*]const u8, // url (null-terminated)
@@ -66,12 +75,22 @@ pub const HttpFn = *const fn (
     *usize, // response_len_out
 ) callconv(.c) c_int;
 
+/// Optional free callback paired with `HttpFn`. If set, the SDK calls this
+/// to release the response buffer instead of libc `free`. Receives the same
+/// user context the transport was registered with.
+pub const HttpFreeFn = *const fn (
+    ?*anyopaque, // user context
+    [*]u8, // response ptr (as returned from HttpFn)
+    usize, // response len
+) callconv(.c) void;
+
 pub const Client = struct {
     allocator: std.mem.Allocator,
     endpoint: []const u8,
     next_id: u64,
     http_fn: ?HttpFn = null,
     http_ctx: ?*anyopaque = null,
+    http_free_fn: ?HttpFreeFn = null,
 
     pub fn init(allocator: std.mem.Allocator, endpoint: []const u8) !Client {
         return .{
@@ -111,9 +130,15 @@ pub const Client = struct {
             const status = f(self.http_ctx, url_z.ptr, request_json.ptr, request_json.len, &resp_ptr, &resp_len);
             if (status != 0) return error.HttpTransportFailed;
 
-            // Copy response to our allocator and free the host's buffer
+            // Copy response to our allocator, then hand the host's buffer
+            // back to its own free function. Falls back to libc free when no
+            // free callback is registered — see the HttpFn allocator contract.
             const owned = try self.allocator.dupe(u8, resp_ptr[0..resp_len]);
-            std.c.free(resp_ptr);
+            if (self.http_free_fn) |free_fn| {
+                free_fn(self.http_ctx, resp_ptr, resp_len);
+            } else {
+                std.c.free(resp_ptr);
+            }
             break :blk owned;
         } else try http_post(self.allocator, self.endpoint, request_json);
         defer self.allocator.free(body);
@@ -192,6 +217,64 @@ pub const Client = struct {
         return parseHex(u64, result.string);
     }
 };
+
+// ---- Audit F-02 tripwire: host-side free callback is invoked instead of
+// std.c.free when http_free_fn is registered. Allocates the response with a
+// non-libc allocator (Zig's std heap) — under the old contract this would
+// SIGABRT on macOS when the SDK tried to libc-free a Zig-allocator pointer.
+
+const testing = std.testing;
+
+const HostState = struct {
+    allocator: std.mem.Allocator,
+    free_calls: usize = 0,
+    response_body: []const u8,
+};
+
+fn testHostHttp(
+    ctx: ?*anyopaque,
+    _: [*]const u8,
+    _: [*]const u8,
+    _: usize,
+    resp_out: *[*]u8,
+    resp_len_out: *usize,
+) callconv(.c) c_int {
+    const state: *HostState = @ptrCast(@alignCast(ctx.?));
+    const buf = state.allocator.dupe(u8, state.response_body) catch return 1;
+    resp_out.* = buf.ptr;
+    resp_len_out.* = buf.len;
+    return 0;
+}
+
+fn testHostFree(
+    ctx: ?*anyopaque,
+    ptr: [*]u8,
+    len: usize,
+) callconv(.c) void {
+    const state: *HostState = @ptrCast(@alignCast(ctx.?));
+    state.free_calls += 1;
+    state.allocator.free(ptr[0..len]);
+}
+
+test "http_free_fn is invoked for host-allocated response (audit F-02)" {
+    var state = HostState{
+        .allocator = testing.allocator,
+        .response_body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":\"0x1\"}",
+    };
+
+    var client = try Client.init(testing.allocator, "http://test.invalid");
+    defer client.deinit();
+    client.http_fn = testHostHttp;
+    client.http_ctx = &state;
+    client.http_free_fn = testHostFree;
+
+    const result = try client.callWithParams("eth_chainId", &[_]std.json.Value{});
+    defer freeValue(testing.allocator, result);
+
+    try testing.expectEqual(@as(usize, 1), state.free_calls);
+    try testing.expect(result == .string);
+    try testing.expectEqualStrings("0x1", result.string);
+}
 
 fn deepCopy(allocator: std.mem.Allocator, value: std.json.Value) !std.json.Value {
     return switch (value) {

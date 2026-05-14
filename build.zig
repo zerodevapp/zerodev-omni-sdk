@@ -136,8 +136,25 @@ pub fn build(b: *std.Build) void {
     });
     const run_lib_tests = b.addRunArtifact(lib_tests);
 
+    // Transport tests live in a separate compilation because the transport
+    // module is referenced by other modules through a named import — its
+    // tests don't surface in the root compilation's test list.
+    const transport_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/transport/json_rpc.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "primitives", .module = primitives_mod },
+            },
+        }),
+    });
+    const run_transport_tests = b.addRunArtifact(transport_tests);
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_tests.step);
+    test_step.dependOn(&run_transport_tests.step);
 
     // ---- E2E tests (require local Anvil + Alto) ----
 

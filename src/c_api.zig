@@ -40,6 +40,25 @@ fn defaultAllocator() std.mem.Allocator {
     };
 }
 
+// ---- Canonical libc allocator exports (audit F-02) ----
+//
+// Hosts that hand buffers back to the SDK across FFI (HTTP responses,
+// paymaster_data) should allocate via `aa_alloc` when they want the SDK to
+// free with libc `free`. This mirrors what the SDK itself uses internally
+// (c_allocator), so SDK-side `std.c.free` works correctly on pointers from
+// aa_alloc on every platform. Hosts whose runtime can't produce libc-malloc
+// pointers (Go runtime, Rust global allocator, etc.) must instead register a
+// matching free callback via `aa_context_set_http_free_fn` /
+// `aa_context_set_paymaster_free_fn`.
+
+pub export fn aa_alloc(size: usize) callconv(.c) ?*anyopaque {
+    if (size == 0) return null;
+    return std.c.malloc(size);
+}
+
+// `aa_free` is defined further down (used to free SDK-owned buffers like
+// the receipt JSON); it doubles as the host-side libc free for F-02.
+
 // ---- Thread-local error buffer ----
 
 threadlocal var last_error_buf: [1024]u8 = undefined;
@@ -108,8 +127,19 @@ pub const PaymasterPhase = enum(c_int) {
     final = 1, // After gas estimation (pm_getPaymasterData)
 };
 
-/// Result from paymaster middleware. paymaster_data is allocated by the
-/// middleware and freed by the caller via the context allocator.
+/// Result from paymaster middleware.
+///
+/// **Allocator contract (audit F-02):** `paymaster_data` MUST be either
+///   (a) allocated via `aa_alloc` (or libc `malloc`), in which case the SDK
+///       frees it via libc `free`, or
+///   (b) allocated with a different allocator, in which case the host MUST
+///       register a matching free callback via
+///       `aa_context_set_paymaster_free_fn`.
+///
+/// Handing back a Go/Rust/Python-runtime pointer with no free fn registered
+/// is undefined behavior. The built-in `aa_paymaster_zerodev` uses libc
+/// allocation, so consumers using only the in-tree paymaster need no
+/// additional wiring.
 pub const PaymasterResult = extern struct {
     paymaster: [20]u8,
     paymaster_verification_gas_limit: u64,
@@ -131,6 +161,14 @@ pub const PaymasterFn = *const fn (
     ?*PaymasterResult, // out
 ) callconv(.c) Status;
 
+/// Optional free callback for `PaymasterResult.paymaster_data`. If set, the
+/// SDK invokes this in place of libc `free` after consuming the data.
+pub const PaymasterFreeFn = *const fn (
+    ?*ContextImpl, // ctx (same as the paymaster middleware ctx)
+    [*]u8, // paymaster_data ptr
+    usize, // paymaster_data_len
+) callconv(.c) void;
+
 // ---- Context ----
 
 pub const ContextImpl = struct {
@@ -141,9 +179,30 @@ pub const ContextImpl = struct {
     chain_id: u64,
     gas_middleware: ?GasPriceFn,
     paymaster_middleware: ?PaymasterFn,
+    paymaster_free_fn: ?PaymasterFreeFn = null,
     http_fn: ?transport.HttpFn = null,
     http_ctx: ?*anyopaque = null,
+    http_free_fn: ?transport.HttpFreeFn = null,
 };
+
+/// Copy the host HTTP transport config from a context onto a fresh Client.
+/// Keeps the 5 call sites that spin up internal RPC clients in lock-step.
+fn wireTransport(rpc: *Client, c: *const ContextImpl) void {
+    rpc.http_fn = c.http_fn;
+    rpc.http_ctx = c.http_ctx;
+    rpc.http_free_fn = c.http_free_fn;
+}
+
+/// Release a `PaymasterResult.paymaster_data` buffer. Routes through the
+/// host's free callback when registered; otherwise frees via libc (assumes
+/// the paymaster middleware allocated via `aa_alloc`/libc malloc).
+fn freePaymasterData(c: *ContextImpl, ptr: [*]u8, len: usize) void {
+    if (c.paymaster_free_fn) |free_fn| {
+        free_fn(c, ptr, len);
+    } else {
+        c.allocator.free(ptr[0..len]);
+    }
+}
 
 pub export fn aa_context_create(
     project_id: [*:0]const u8,
@@ -239,8 +298,7 @@ pub export fn aa_gas_zerodev(
         setLastError("failed to create RPC client for gas price", .{});
         return .send_userop_failed;
     };
-    rpc.http_fn = c.http_fn;
-    rpc.http_ctx = c.http_ctx;
+    wireTransport(&rpc, c);
     defer rpc.deinit();
 
     const result = rpc.callWithParams("zd_getUserOperationGasPrice", &[_]std.json.Value{}) catch |err| {
@@ -296,6 +354,18 @@ pub export fn aa_context_set_paymaster_middleware(
     return .ok;
 }
 
+/// Audit F-02. Register a free function for `PaymasterResult.paymaster_data`.
+/// Pass NULL to clear (the SDK then assumes libc allocation and frees with
+/// libc free — safe for the built-in `aa_paymaster_zerodev`).
+pub export fn aa_context_set_paymaster_free_fn(
+    ctx: ?*ContextImpl,
+    free_fn: ?PaymasterFreeFn,
+) callconv(.c) Status {
+    const c = ctx orelse return .null_context;
+    c.paymaster_free_fn = free_fn;
+    return .ok;
+}
+
 pub export fn aa_context_set_http_transport(
     ctx: ?*ContextImpl,
     http_fn: ?transport.HttpFn,
@@ -304,6 +374,18 @@ pub export fn aa_context_set_http_transport(
     const c = ctx orelse return .null_context;
     c.http_fn = http_fn;
     c.http_ctx = http_ctx;
+    return .ok;
+}
+
+/// Audit F-02. Register a free function for response buffers returned by
+/// the HTTP transport. Pass NULL to clear (the SDK then frees with libc
+/// free — safe only when the host allocates via `aa_alloc` or libc malloc).
+pub export fn aa_context_set_http_free_fn(
+    ctx: ?*ContextImpl,
+    free_fn: ?transport.HttpFreeFn,
+) callconv(.c) Status {
+    const c = ctx orelse return .null_context;
+    c.http_free_fn = free_fn;
     return .ok;
 }
 
@@ -343,8 +425,7 @@ pub export fn aa_paymaster_zerodev(
         setLastError("failed to create RPC client for paymaster", .{});
         return .paymaster_failed;
     };
-    rpc.http_fn = c.http_fn;
-    rpc.http_ctx = c.http_ctx;
+    wireTransport(&rpc, c);
     defer rpc.deinit();
 
     // Parse the UserOp JSON into a std.json.Value for the RPC call
@@ -871,8 +952,7 @@ pub export fn aa_userop_build(
             setLastError("failed to create RPC client", .{});
             return .build_userop_failed;
         };
-        rpc.http_fn = acc.context.http_fn;
-        rpc.http_ctx = acc.context.http_ctx;
+        wireTransport(&rpc, acc.context);
         eip7702_auth = prepareEip7702Authorization(acc, &rpc, a, acc.context.chain_id) catch |err| switch (err) {
             AuthPrepError.RpcFailed => return .build_userop_failed,
             AuthPrepError.SignFailed => return .sign_userop_failed,
@@ -1183,8 +1263,7 @@ pub export fn aa_send_userop(
         setLastError("failed to create RPC client", .{});
         return .send_userop_failed;
     };
-    rpc.http_fn = acc.context.http_fn;
-    rpc.http_ctx = acc.context.http_ctx;
+    wireTransport(&rpc, acc.context);
 
     const chain_id = acc.context.chain_id;
     const entry_point = Address.fromHex(core.ENTRY_POINT_V07) catch return .send_userop_failed;
@@ -1288,7 +1367,7 @@ pub export fn aa_send_userop(
         var pm_result: PaymasterResult = undefined;
         const pm_status = mw(acc.context, stub_json_str.ptr, stub_json_str.len, ep_hex, chain_id, .stub, &pm_result);
         if (pm_status != .ok) return pm_status;
-        defer if (pm_result.paymaster_data) |p| allocator.free(p[0..pm_result.paymaster_data_len]);
+        defer if (pm_result.paymaster_data) |p| freePaymasterData(acc.context, p, pm_result.paymaster_data_len);
 
         const pm_addr = Address.fromBytes(pm_result.paymaster);
         const pm_data: []const u8 = if (pm_result.paymaster_data) |p| p[0..pm_result.paymaster_data_len] else &[_]u8{};
@@ -1347,7 +1426,7 @@ pub export fn aa_send_userop(
         var pm_result: PaymasterResult = undefined;
         const pm_status = mw(acc.context, final_json_str.ptr, final_json_str.len, ep_hex, chain_id, .final, &pm_result);
         if (pm_status != .ok) return pm_status;
-        defer if (pm_result.paymaster_data) |p| allocator.free(p[0..pm_result.paymaster_data_len]);
+        defer if (pm_result.paymaster_data) |p| freePaymasterData(acc.context, p, pm_result.paymaster_data_len);
 
         const pm_addr = Address.fromBytes(pm_result.paymaster);
         const pm_data: []const u8 = if (pm_result.paymaster_data) |p| p[0..pm_result.paymaster_data_len] else &[_]u8{};
@@ -1436,8 +1515,7 @@ pub export fn aa_wait_for_user_operation_receipt(
         setLastError("failed to create RPC client for receipt polling", .{});
         return .receipt_failed;
     };
-    rpc.http_fn = acc.context.http_fn;
-    rpc.http_ctx = acc.context.http_ctx;
+    wireTransport(&rpc, acc.context);
     defer rpc.deinit();
 
     // Build RPC params: [userOpHash]

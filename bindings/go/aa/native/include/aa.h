@@ -92,7 +92,13 @@ typedef struct {
  * Paymaster middleware function pointer.
  * Called by aa_send_userop to sponsor UserOperations.
  * Receives UserOp JSON, entry point, chain ID, and phase.
- * paymaster_data in result is allocated by the middleware; freed by the caller.
+ *
+ * Allocator contract (audit F-02): `paymaster_data` MUST be allocated via
+ * `aa_alloc` (or libc `malloc`) when the SDK is responsible for freeing.
+ * If your runtime uses a different allocator (Go runtime, Rust global,
+ * etc.), register a matching free callback via
+ * `aa_context_set_paymaster_free_fn`. The built-in `aa_paymaster_zerodev`
+ * uses libc allocation, so consumers using only it need no extra wiring.
  *
  * Optional: if not set, aa_send_userop sends unsponsored (user pays gas).
  */
@@ -103,6 +109,15 @@ typedef aa_status (*aa_paymaster_fn)(aa_context_t *ctx,
                                      uint64_t chain_id,
                                      aa_pm_phase phase,
                                      aa_paymaster_result_t *out);
+
+/**
+ * Optional companion to aa_paymaster_fn. If registered, the SDK calls this
+ * to release `paymaster_data` instead of libc `free`. See aa_paymaster_fn
+ * doc comment for the allocator contract.
+ */
+typedef void (*aa_paymaster_free_fn)(aa_context_t *ctx,
+                                     uint8_t *paymaster_data,
+                                     size_t paymaster_data_len);
 
 /* ---- Context (holds RPC URLs, chain config) ---- */
 
@@ -118,15 +133,38 @@ aa_status aa_context_set_gas_middleware(aa_context_t *ctx,
 aa_status aa_context_set_paymaster_middleware(aa_context_t *ctx,
                                               aa_paymaster_fn middleware);
 
-/** Custom HTTP transport — lets host use URLSession (iOS), OkHttp, etc. */
+/** Audit F-02: register a free function paired with the paymaster
+ * middleware. Pass NULL to clear (the SDK then frees `paymaster_data` via
+ * libc free — only safe when the middleware allocated via aa_alloc or
+ * libc malloc, as the built-in aa_paymaster_zerodev does). */
+aa_status aa_context_set_paymaster_free_fn(aa_context_t *ctx,
+                                            aa_paymaster_free_fn free_fn);
+
+/** Custom HTTP transport — lets host use URLSession (iOS), OkHttp, etc.
+ *
+ * Allocator contract (audit F-02): the response buffer placed in
+ * *response_out MUST be allocated via `aa_alloc` (or libc `malloc`) for the
+ * SDK to free it directly. Hosts using a different allocator MUST register
+ * a matching free callback via `aa_context_set_http_free_fn`. Mixing — a
+ * Go/Rust/Python-runtime pointer with no free fn registered — is undefined
+ * behavior; on macOS the process aborts immediately. */
 typedef int (*aa_http_fn)(void *ctx,
                            const char *url,
                            const char *body, size_t body_len,
                            char **response_out, size_t *response_len_out);
 
+/** Optional companion to aa_http_fn. If registered, the SDK calls this to
+ * release the response buffer instead of libc `free`. */
+typedef void (*aa_http_free_fn)(void *ctx,
+                                 uint8_t *response,
+                                 size_t response_len);
+
 aa_status aa_context_set_http_transport(aa_context_t *ctx,
                                          aa_http_fn transport,
                                          void *transport_ctx);
+
+aa_status aa_context_set_http_free_fn(aa_context_t *ctx,
+                                       aa_http_free_fn free_fn);
 
 aa_status aa_context_destroy(aa_context_t *ctx);
 
@@ -291,6 +329,15 @@ aa_status aa_wait_for_user_operation_receipt(
     size_t *json_len_out);
 
 /* ---- Memory management ---- */
+
+/** Allocate `size` bytes via libc `malloc`. Returns NULL on failure or
+ * when `size` is 0. The matching free is `aa_free`.
+ *
+ * Audit F-02: prefer this over the host's native allocator when handing
+ * buffers back to the SDK across FFI (HTTP responses, paymaster_data).
+ * It guarantees the SDK can safely call libc `free` on the pointer on
+ * every platform, since `aa_alloc` IS libc malloc. */
+void *aa_alloc(size_t size);
 
 void aa_free(void *ptr);
 

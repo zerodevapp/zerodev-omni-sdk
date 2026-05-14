@@ -44,8 +44,11 @@ private func urlSessionHttpCallback(
 
     guard responseError == nil, let data = responseData else { return 1 }
 
-    // Allocate response with C malloc so the Zig side can free with std.c.free
-    let ptr = malloc(data.count)!.assumingMemoryBound(to: CChar.self)
+    // Audit F-02: allocate via the SDK's canonical libc allocator so the
+    // SDK can safely free with libc free. malloc would also work on Apple
+    // platforms (it IS libc malloc), but routing through aa_alloc keeps the
+    // allocator contract explicit at the call site.
+    let ptr = aa_alloc(data.count)!.assumingMemoryBound(to: CChar.self)
     data.withUnsafeBytes { bytes in
         memcpy(ptr, bytes.baseAddress!, data.count)
     }
