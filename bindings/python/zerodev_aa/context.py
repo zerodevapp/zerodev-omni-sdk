@@ -45,8 +45,12 @@ class Context:
         version: KernelVersion = KernelVersion.V3_3,
         index: int = 0,
     ) -> Account:
-        """Create a Kernel smart account."""
-        return Account._create(self._ptr, signer._ptr, int(version), index)
+        """Create a Kernel smart account.
+
+        The returned :class:`Account` holds a strong reference to ``signer``
+        (audit F-09) so GC won't finalize it while the account is alive.
+        """
+        return Account._create(self, signer, int(version), index)
 
     def new_account_7702(
         self,
@@ -61,12 +65,15 @@ class Context:
         via the ``eip7702Auth`` field; later ops skip the auth once the
         delegation is installed on-chain. Today only ``KernelVersion.V3_3``
         supports EIP-7702.
+
+        The returned :class:`Account` holds a strong reference to ``signer``
+        (audit F-09).
         """
         ptr = ctypes.POINTER(_Account)()
         check(_lib.aa_context_new_account_7702(
             self._ptr, signer._ptr, int(version), ctypes.byref(ptr),
         ))
-        return Account(ptr)
+        return Account(ptr, signer)
 
     def close(self) -> None:
         if self._ptr:

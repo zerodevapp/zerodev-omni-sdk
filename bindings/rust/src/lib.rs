@@ -310,12 +310,15 @@ impl Context {
     }
 
     /// Create a new Kernel account bound to this context.
-    pub fn new_account(
-        &self,
-        signer: &Signer,
+    ///
+    /// Both `self` (the Context) and `signer` must outlive the returned
+    /// [`Account`] — enforced at compile time via the shared `'a` lifetime.
+    pub fn new_account<'a>(
+        &'a self,
+        signer: &'a Signer,
         version: KernelVersion,
         index: u32,
-    ) -> Result<Account<'_>> {
+    ) -> Result<Account<'a>> {
         let mut acc: *mut ffi::aa_account_t = ptr::null_mut();
         unsafe {
             error::check(ffi::aa_account_create(
@@ -329,6 +332,7 @@ impl Context {
         Ok(Account {
             ptr: acc,
             _ctx: self,
+            _signer: signer,
         })
     }
 
@@ -342,11 +346,11 @@ impl Context {
     /// on-chain.
     ///
     /// Today only [`KernelVersion::V3_3`] supports EIP-7702.
-    pub fn new_account_7702(
-        &self,
-        signer: &Signer,
+    pub fn new_account_7702<'a>(
+        &'a self,
+        signer: &'a Signer,
         version: KernelVersion,
-    ) -> Result<Account<'_>> {
+    ) -> Result<Account<'a>> {
         let mut acc: *mut ffi::aa_account_t = ptr::null_mut();
         unsafe {
             error::check(ffi::aa_context_new_account_7702(
@@ -359,6 +363,7 @@ impl Context {
         Ok(Account {
             ptr: acc,
             _ctx: self,
+            _signer: signer,
         })
     }
 }
@@ -375,11 +380,29 @@ impl Drop for Context {
 
 /// Kernel smart account with ECDSA validator.
 ///
-/// Borrows the parent [`Context`] via lifetime — the compiler prevents
-/// use-after-free of the context while any account is alive.
-pub struct Account<'ctx> {
+/// Borrows both the parent [`Context`] and the [`Signer`] via a shared lifetime
+/// — the compiler prevents use-after-free of either while any account is alive.
+///
+/// Audit F-09: prior versions only borrowed [`Context`], so dropping the
+/// [`Signer`] while an [`Account`] was alive left the SDK's cached signer
+/// pointer dangling. The next signing call read freed memory as the private
+/// key. With the `'a` lifetime tying both `_ctx` and `_signer`, the compiler
+/// now rejects that pattern at compile time:
+///
+/// ```compile_fail
+/// use zerodev_aa::{Context, GasMiddleware, KernelVersion, PaymasterMiddleware, Signer};
+/// # fn demo(ctx: &Context) -> Result<(), Box<dyn std::error::Error>> {
+/// let signer = Signer::local(&[0x11u8; 32])?;
+/// let account = ctx.new_account(&signer, KernelVersion::V3_3, 0)?;
+/// drop(signer); // F-09 tripwire: must NOT compile while `account` is alive.
+/// let _ = account.get_address()?;
+/// # Ok(())
+/// # }
+/// ```
+pub struct Account<'a> {
     ptr: *mut ffi::aa_account_t,
-    _ctx: &'ctx Context,
+    _ctx: &'a Context,
+    _signer: &'a Signer,
 }
 
 unsafe impl Send for Account<'_> {}

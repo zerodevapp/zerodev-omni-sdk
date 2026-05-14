@@ -379,9 +379,16 @@ func (c *Context) Close() {
 }
 
 // Account represents a Kernel smart account with an ECDSA validator.
+//
+// Audit F-09: Account holds strong references to both the parent Context and
+// the Signer so neither is garbage-collected while the Account is alive. This
+// prevents the use-after-free that would occur if the user let the Signer fall
+// out of scope. Explicit signer.Close() still bypasses this — that's user
+// error and documented as unsupported while an Account references the signer.
 type Account struct {
-	acc *C.aa_account_t
-	ctx *Context
+	acc    *C.aa_account_t
+	ctx    *Context
+	signer *Signer
 }
 
 // NewAccount creates a new Kernel account using the given signer.
@@ -399,7 +406,7 @@ func (c *Context) NewAccount(signer *Signer, version KernelVersion, index uint32
 		return nil, fmt.Errorf("aa_account_create failed: %s (code %d)", C.GoString(C.aa_get_last_error()), int(status))
 	}
 
-	return &Account{acc: acc, ctx: c}, nil
+	return &Account{acc: acc, ctx: c, signer: signer}, nil
 }
 
 // NewAccount7702 creates a Kernel smart account using EIP-7702 delegation.
@@ -426,7 +433,7 @@ func (c *Context) NewAccount7702(signer *Signer, version KernelVersion) (*Accoun
 		return nil, fmt.Errorf("aa_context_new_account_7702 failed: %s (code %d)", C.GoString(C.aa_get_last_error()), int(status))
 	}
 
-	return &Account{acc: acc, ctx: c}, nil
+	return &Account{acc: acc, ctx: c, signer: signer}, nil
 }
 
 // Close destroys the account.

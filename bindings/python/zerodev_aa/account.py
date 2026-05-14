@@ -9,16 +9,26 @@ from .types import Call, Address, Hash
 
 
 class Account:
-    """Kernel smart account."""
+    """Kernel smart account.
 
-    def __init__(self, ptr: ctypes.POINTER(_Account)):
+    Holds a strong reference to the :class:`Signer` so GC won't finalize it
+    while the account is alive. Audit F-09: previously, dropping the signer
+    out of scope let GC free the C handle, leaving Account's cached signer
+    pointer dangling.
+
+    Explicit ``signer.close()`` while an account references the signer is
+    user error and undefined behaviour.
+    """
+
+    def __init__(self, ptr: ctypes.POINTER(_Account), signer=None):
         self._ptr = ptr
+        self._signer = signer  # F-09 retention; keeps the signer alive
 
     @staticmethod
-    def _create(ctx_ptr, signer_ptr, version: int, index: int) -> "Account":
+    def _create(ctx, signer, version: int, index: int) -> "Account":
         ptr = ctypes.POINTER(_Account)()
-        check(_lib.aa_account_create(ctx_ptr, signer_ptr, version, index, ctypes.byref(ptr)))
-        return Account(ptr)
+        check(_lib.aa_account_create(ctx._ptr, signer._ptr, version, index, ctypes.byref(ptr)))
+        return Account(ptr, signer)
 
     def get_address(self) -> Address:
         """Get the counterfactual smart account address."""

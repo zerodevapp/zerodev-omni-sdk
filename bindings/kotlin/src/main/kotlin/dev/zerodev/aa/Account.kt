@@ -1,8 +1,13 @@
 package dev.zerodev.aa
 
+// Audit F-09: Account holds strong refs to both the parent Context and the
+// Signer so neither is GC'd while the Account is alive. Explicit
+// `signer.close()` while an Account references the signer is user error and
+// undefined behaviour.
 class Account internal constructor(
     internal val ptr: Long,
     private val ctx: Context,
+    private val signer: Signer,
 ) : AutoCloseable {
     private var closed = false
 

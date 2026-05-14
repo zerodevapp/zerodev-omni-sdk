@@ -14,7 +14,7 @@ fn main() {
 
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
     println!("cargo:rustc-link-lib=static=zerodev_aa");
-    println!("cargo:rustc-link-lib=static=secp256k1");
+    // secp256k1 is bundled inside libzerodev_aa.a via zabi — no separate archive.
 
     #[cfg(target_os = "macos")]
     {

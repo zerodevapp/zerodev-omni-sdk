@@ -3,11 +3,16 @@ import Foundation
 
 public final class Account: @unchecked Sendable {
     let ptr: OpaquePointer
-    private let context: Context  // strong ref prevents use-after-free
+    // Strong references prevent use-after-free of the Context and Signer
+    // while the Account is alive (audit F-09). ARC will not deinit the Signer
+    // until the Account itself is released.
+    private let context: Context
+    private let signer: Signer
 
-    init(ptr: OpaquePointer, context: Context) {
+    init(ptr: OpaquePointer, context: Context, signer: Signer) {
         self.ptr = ptr
         self.context = context
+        self.signer = signer
     }
 
     public func getAddress() throws -> Address {

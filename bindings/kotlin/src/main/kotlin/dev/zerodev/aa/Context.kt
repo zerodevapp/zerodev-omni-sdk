@@ -37,7 +37,7 @@ class Context private constructor(internal val ptr: Long) : AutoCloseable {
         check(!closed) { "Context is closed" }
         val out = LongArray(1)
         checkStatus(NativeLib.nAccountCreate(ptr, signer.ptr, version.code, index, out))
-        return Account(out[0], this)
+        return Account(out[0], this, signer)
     }
 
     /**
@@ -53,7 +53,7 @@ class Context private constructor(internal val ptr: Long) : AutoCloseable {
         check(!closed) { "Context is closed" }
         val out = LongArray(1)
         checkStatus(NativeLib.nAccountCreate7702(ptr, signer.ptr, version.code, out))
-        return Account(out[0], this)
+        return Account(out[0], this, signer)
     }
 
     override fun close() {

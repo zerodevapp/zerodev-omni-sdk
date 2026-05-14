@@ -31,7 +31,7 @@ public final class Context: @unchecked Sendable {
         let status = aa_account_create(ptr, signer.ptr, aa_kernel_version(rawValue: UInt32(version.rawValue)), index, &out)
         try checkResult(status)
         guard let p = out else { throw AAError.nullOutPtr }
-        return Account(ptr: p, context: self)
+        return Account(ptr: p, context: self, signer: signer)
     }
 
     /// Create a Kernel smart account using EIP-7702 delegation.
@@ -49,7 +49,7 @@ public final class Context: @unchecked Sendable {
         let status = aa_context_new_account_7702(ptr, signer.ptr, aa_kernel_version(rawValue: UInt32(version.rawValue)), &out)
         try checkResult(status)
         guard let p = out else { throw AAError.nullOutPtr }
-        return Account(ptr: p, context: self)
+        return Account(ptr: p, context: self, signer: signer)
     }
 
     deinit {
