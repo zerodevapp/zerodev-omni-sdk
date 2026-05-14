@@ -14,7 +14,7 @@ jobs:
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5.0.0
 
       - name: Determine version
         run: |
@@ -23,7 +23,7 @@ jobs:
           echo "TAG=native-v$BASE" >> $GITHUB_ENV
 
       - name: Install Zig
-        uses: goto-bus-stop/setup-zig@v2
+        uses: goto-bus-stop/setup-zig@abea47f85e598557f500fa1fd2ab7464fcb39406  # v2.2.1
         with:
           version: '0.16.0'
 
@@ -85,7 +85,7 @@ jobs:
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5.0.0
 
       - name: Determine version
         run: |
@@ -105,7 +105,7 @@ jobs:
           echo "Building Rust release: $VERSION"
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable (pinned)
 
       - name: Update version in Cargo.toml
         run: |

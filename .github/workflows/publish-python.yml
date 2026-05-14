@@ -14,7 +14,7 @@ jobs:
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5.0.0
 
       - name: Determine version
         run: |
@@ -37,12 +37,12 @@ jobs:
           echo "Building Python release: $PYPI_VERSION"
 
       - name: Install Zig
-        uses: goto-bus-stop/setup-zig@v2
+        uses: goto-bus-stop/setup-zig@abea47f85e598557f500fa1fd2ab7464fcb39406  # v2.2.1
         with:
           version: '0.16.0'
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.5.0
         with:
           python-version: '3.12'
 

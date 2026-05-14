@@ -1,0 +1,12 @@
+version: 2
+updates:
+  # Audit F-13: keep SHA-pinned action references current. Dependabot opens a
+  # PR with the new SHA + updated version comment whenever an upstream action
+  # ships a tagged release; the SHA pin remains immutable in source.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      actions:
+        patterns: ["*"]

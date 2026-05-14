@@ -15,7 +15,7 @@ jobs:
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5.0.0
 
       - name: Determine version
         run: |
@@ -37,7 +37,7 @@ jobs:
           echo "Building Go release: v$VERSION"
 
       - name: Install Zig
-        uses: goto-bus-stop/setup-zig@v2
+        uses: goto-bus-stop/setup-zig@abea47f85e598557f500fa1fd2ab7464fcb39406  # v2.2.1
         with:
           version: '0.16.0'
 
@@ -79,7 +79,7 @@ jobs:
           find "$NATIVE_DIR" -name "*.a" -exec ls -lh {} \;
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5.0.2
         with:
           go-version: '1.21'
 
