@@ -13,14 +13,46 @@ jobs:
     runs-on: macos-14
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      hash_aarch64_macos: ${{ steps.hashes.outputs.aarch64_macos }}
+      hash_x86_64_macos: ${{ steps.hashes.outputs.x86_64_macos }}
+      hash_x86_64_linux_gnu: ${{ steps.hashes.outputs.x86_64_linux_gnu }}
+      hash_aarch64_linux_gnu: ${{ steps.hashes.outputs.aarch64_linux_gnu }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5.0.0
+        with:
+          fetch-depth: 0  # need full tag history for version bump
 
-      - name: Determine version
+      - name: Determine version (immutable, monotonic)
+        id: version
         run: |
           BASE=$(cat VERSION | tr -d '[:space:]')
-          echo "VERSION=$BASE" >> $GITHUB_ENV
-          echo "TAG=native-v$BASE" >> $GITHUB_ENV
+
+          # Both rust-v* and native-v* share the same BUILD counter so the
+          # crate version and the native release version always line up.
+          git fetch --tags --quiet
+          LATEST=$(git tag -l "rust-v${BASE}.*" "native-v${BASE}.*" | sort -t. -k5 -n | tail -1)
+          if [ -n "$LATEST" ]; then
+            BUILD=$(echo "$LATEST" | grep -o '[0-9]*$')
+            BUILD=$((BUILD + 1))
+          else
+            BUILD=1
+          fi
+
+          VERSION="${BASE}.${BUILD}"
+          TAG="native-v${VERSION}"
+
+          # Fail loud if the immutable tag already exists — never overwrite.
+          if git rev-parse "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::error::Tag ${TAG} already exists. Native release tags are immutable."
+            exit 1
+          fi
+
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Native release: ${TAG}"
 
       - name: Install Zig
         uses: goto-bus-stop/setup-zig@abea47f85e598557f500fa1fd2ab7464fcb39406  # v2.2.1
@@ -62,13 +94,35 @@ jobs:
               -C "$GITHUB_WORKSPACE" include/aa.h
           done
 
-      - name: Create or update GitHub Release
+      - name: Compute SHA-256 manifest
+        id: hashes
+        run: |
+          declare -A keys=(
+            [aarch64-macos]=aarch64_macos
+            [x86_64-macos]=x86_64_macos
+            [x86_64-linux]=x86_64_linux_gnu
+            [aarch64-linux]=aarch64_linux_gnu
+          )
+          for asset_tag in aarch64-macos x86_64-macos x86_64-linux aarch64-linux; do
+            file="dist/zerodev-aa-native-${asset_tag}.tar.gz"
+            hash=$(shasum -a 256 "$file" | awk '{print $1}')
+            key="${keys[$asset_tag]}"
+            echo "${key}=${hash}" >> "$GITHUB_OUTPUT"
+            echo "${asset_tag}: ${hash}"
+          done
+
+      - name: Create immutable GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${{ env.TAG }}"
-          gh release delete "$TAG" --yes 2>/dev/null || true
-          git push --delete origin "$TAG" 2>/dev/null || true
+          TAG="${{ steps.version.outputs.tag }}"
+          VERSION="${{ steps.version.outputs.version }}"
+
+          # Tags are immutable — fail rather than delete-and-recreate.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::Release ${TAG} already exists. Native releases are immutable."
+            exit 1
+          fi
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -76,8 +130,8 @@ jobs:
           git push origin "$TAG"
 
           gh release create "$TAG" dist/*.tar.gz \
-            --title "Native libraries v${{ env.VERSION }}" \
-            --notes "Prebuilt static libraries for Rust binding."
+            --title "Native libraries v${VERSION}" \
+            --notes "Prebuilt static libraries for Rust binding (immutable; SHA-256 pinned in native-libs.sha256)."
 
   publish:
     needs: native-libs
@@ -87,35 +141,46 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5.0.0
 
-      - name: Determine version
-        run: |
-          BASE=$(cat VERSION | tr -d '[:space:]')
-
-          git fetch --tags
-          LATEST=$(git tag -l "rust-v${BASE}.*" | sort -t. -k5 -n | tail -1)
-          if [ -n "$LATEST" ]; then
-            BUILD=$(echo "$LATEST" | grep -o '[0-9]*$')
-            BUILD=$((BUILD + 1))
-          else
-            BUILD=1
-          fi
-
-          VERSION="${BASE}.${BUILD}"
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
-          echo "Building Rust release: $VERSION"
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable (pinned)
 
+      - name: Write native-libs.sha256 manifest
+        run: |
+          TAG="${{ needs.native-libs.outputs.tag }}"
+          cat > bindings/rust/native-libs.sha256 <<EOF
+          # Native library SHA-256 manifest — verified by bindings/rust/build.rs
+          # after downloading the tarball from GitHub Releases.
+          #
+          # Auto-generated by .github/workflows/publish-rust.yml. Do not edit manually.
+          #
+          # Format:
+          #   # tag: <release-tag>     ← used to build the GitHub Release asset URL
+          #   <target>    <sha256>     ← lowercase hex, one line per target
+          #
+          # This file ships inside the published crate so consumers can verify the
+          # downloaded native library matches what the crate author actually built.
+          # Audit F-12 (https://linear.app/offchain-labs/issue/ZER-740).
+
+          # tag: ${TAG}
+          aarch64-macos      ${{ needs.native-libs.outputs.hash_aarch64_macos }}
+          x86_64-macos       ${{ needs.native-libs.outputs.hash_x86_64_macos }}
+          x86_64-linux-gnu   ${{ needs.native-libs.outputs.hash_x86_64_linux_gnu }}
+          aarch64-linux-gnu  ${{ needs.native-libs.outputs.hash_aarch64_linux_gnu }}
+          EOF
+          cat bindings/rust/native-libs.sha256
+
       - name: Update version in Cargo.toml
         run: |
+          VERSION="${{ needs.native-libs.outputs.version }}"
           cd bindings/rust
-          sed -i '' "s/^version = \".*\"/version = \"${{ env.VERSION }}\"/" Cargo.toml
-          echo "Cargo version set to: ${{ env.VERSION }}"
+          sed -i '' "s/^version = \".*\"/version = \"${VERSION}\"/" Cargo.toml
+          echo "Cargo version set to: ${VERSION}"
 
-      - name: Verify build (downloads native libs via build.rs)
+      - name: Verify build (downloads + SHA-256-verifies native libs via build.rs)
         run: |
           cd bindings/rust
+          # Force the auto-download path so we exercise verification end-to-end.
+          unset ZERODEV_LIB_DIR
           cargo build --release
 
       - name: Publish to crates.io
@@ -127,9 +192,16 @@ jobs:
 
       - name: Tag release
         run: |
-          TAG="rust-v${{ env.VERSION }}"
+          TAG="rust-v${{ needs.native-libs.outputs.version }}"
+          VERSION="${{ needs.native-libs.outputs.version }}"
+
+          # Commit the Cargo.toml bump + manifest so the tag points at a
+          # buildable, integrity-verifiable state (not the dirty working tree).
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add bindings/rust/Cargo.toml bindings/rust/native-libs.sha256
+          git commit -m "release: zerodev-aa ${VERSION}"
+
           git tag "$TAG"
           git push origin "$TAG"
           echo "Tagged: $TAG"
