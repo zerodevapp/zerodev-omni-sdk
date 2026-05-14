@@ -26,6 +26,14 @@ pub const LocalSigner = struct {
         };
     }
 
+    /// Best-effort wipe of secret material before the LocalSigner is freed.
+    /// Audit F-04 — prevents the 32-byte secp256k1 key from lingering in heap
+    /// memory until the next allocation overwrites it.
+    pub fn deinit(self: *LocalSigner) void {
+        std.crypto.secureZero(u8, std.mem.asBytes(&self.inner));
+        std.crypto.secureZero(u8, &self.address_bytes);
+    }
+
     pub fn signer(self: *LocalSigner) Signer {
         return .{
             .ptr = @ptrCast(self),
@@ -81,6 +89,35 @@ fn zabiToLocal(z_sig: ZabiSignature) Signature {
         // historically use 27 or 28. Match the previous zigeth-based behaviour.
         .v = @as(u8, z_sig.v) + 27,
     };
+}
+
+test "F-04 tripwire: LocalSigner.deinit zeros inner key + address" {
+    const allocator = std.testing.allocator;
+
+    var pk: [32]u8 = undefined;
+    @memset(&pk, 0xAB);
+
+    var local = try LocalSigner.init(allocator, pk);
+
+    // Sanity: at least one byte of the inner zabi signer is non-zero (the
+    // private key, public key cache, address — all of them).
+    var inner_bytes_before: bool = false;
+    for (std.mem.asBytes(&local.inner)) |b| {
+        if (b != 0) {
+            inner_bytes_before = true;
+            break;
+        }
+    }
+    try std.testing.expect(inner_bytes_before);
+
+    local.deinit();
+
+    for (std.mem.asBytes(&local.inner)) |b| {
+        try std.testing.expectEqual(@as(u8, 0), b);
+    }
+    for (local.address_bytes) |b| {
+        try std.testing.expectEqual(@as(u8, 0), b);
+    }
 }
 
 test "signAuthorization round-trip: recovered address matches signer" {

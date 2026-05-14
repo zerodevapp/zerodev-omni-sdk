@@ -54,8 +54,11 @@ fn setLastError(comptime fmt: []const u8, args: anytype) void {
 }
 
 fn setLastErrorStr(msg: []const u8) void {
-    const copy_len = @min(msg.len, last_error_buf.len);
+    // Reserve one byte for the NUL terminator. Audit F-03: prior version could
+    // fill the buffer to capacity without terminator → OOB read in C caller.
+    const copy_len = @min(msg.len, last_error_buf.len - 1);
     @memcpy(last_error_buf[0..copy_len], msg[0..copy_len]);
+    last_error_buf[copy_len] = 0;
     last_error_len = copy_len;
 }
 
@@ -424,6 +427,7 @@ pub export fn aa_signer_local(
 
     const allocator = defaultAllocator();
     var pk: [32]u8 = undefined;
+    defer std.crypto.secureZero(u8, &pk); // F-04: don't leave the key on the stack
     @memcpy(&pk, private_key.?[0..32]);
 
     const local = LocalSigner.init(allocator, pk) catch {
@@ -444,11 +448,17 @@ pub export fn aa_signer_generate(
 
     const allocator = defaultAllocator();
     var pk: [32]u8 = undefined;
-    // Zig 0.16 moved randomness into the `std.Io` interface. Use the
-    // single-threaded global Io and prefer `randomSecure` for key generation;
-    // fall back to non-secure `random` if the syscall is unavailable.
+    defer std.crypto.secureZero(u8, &pk); // F-04: don't leave the key on the stack
+
+    // Zig 0.16 exposes randomness through `std.Io`. We require the OS CSPRNG;
+    // fall back is intentionally absent. Audit F-01: previously a `catch` here
+    // dropped to `io.random` (non-cryptographic), producing brute-forceable
+    // keys when `getrandom` was unavailable (seccomp, kernel < 3.17, etc).
     const io = std.Io.Threaded.global_single_threaded.io();
-    io.randomSecure(&pk) catch io.random(&pk);
+    io.randomSecure(&pk) catch {
+        setLastError("CSPRNG unavailable; refusing to generate private key", .{});
+        return .invalid_private_key;
+    };
 
     const local = LocalSigner.init(allocator, pk) catch {
         setLastError("failed to initialize signer from generated key", .{});
@@ -551,11 +561,18 @@ pub export fn aa_signer_sign_authorization(
 
 pub export fn aa_signer_destroy(signer: ?*SignerImpl) callconv(.c) void {
     const s = signer orelse return;
-    if (s.kind == .json_rpc) {
-        var rpc = &s.kind.json_rpc;
-        rpc.deinit();
+    // Audit F-04: wipe any secret material before releasing the allocation.
+    // Capture the allocator first — the broader secureZero below clobbers
+    // `s.allocator`'s function pointers, so we'd crash on `s.allocator.destroy(s)`
+    // otherwise.
+    const allocator = s.allocator;
+    switch (s.kind) {
+        .local => |*l| l.deinit(),
+        .json_rpc => |*r| r.deinit(),
+        .custom => {}, // host owns the secret state; nothing to wipe on our side
     }
-    s.allocator.destroy(s);
+    std.crypto.secureZero(u8, std.mem.asBytes(&s.kind));
+    allocator.destroy(s);
 }
 
 // ---- Account ----
@@ -1129,10 +1146,8 @@ pub export fn aa_free(ptr: ?*anyopaque) callconv(.c) void {
 
 pub export fn aa_get_last_error() callconv(.c) [*:0]const u8 {
     if (last_error_len == 0) return "";
-    // Null-terminate
-    if (last_error_len < last_error_buf.len) {
-        last_error_buf[last_error_len] = 0;
-    }
+    // Always write the NUL terminator within the buffer. Audit F-03.
+    last_error_buf[@min(last_error_len, last_error_buf.len - 1)] = 0;
     return @ptrCast(&last_error_buf);
 }
 
