@@ -14,3 +14,4 @@ dist/
 /libc_api.a
 SWIFT_DX_FEEDBACK.md
 .worktrees/
+examples/privy-signer/*/privy-signer
