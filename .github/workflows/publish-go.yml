@@ -14,6 +14,13 @@ concurrency:
 jobs:
   publish:
     runs-on: macos-14
+    permissions:
+      # Audit F-15: SLSA build-provenance attestation needs an OIDC token
+      # exchanged for a Sigstore signing cert, plus write access to push the
+      # attestation. `contents: write` is also needed to push the release tag.
+      id-token: write
+      attestations: write
+      contents: write
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
@@ -89,6 +96,19 @@ jobs:
         run: |
           cd bindings/go
           CGO_ENABLED=1 go build ./aa/
+
+      - name: Attest build provenance for bundled native libs (audit F-15)
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32  # v4.1.0
+        with:
+          subject-path: 'bindings/go/aa/native/**/libzerodev_aa.a'
+
+      - name: Generate SBOM (audit F-15) — uploaded as workflow artifact for inspection
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0.24.0
+        with:
+          path: .
+          format: cyclonedx-json
+          artifact-name: sbom-go.cdx.json
+          upload-release-assets: false
 
       - name: Tag release (tag-only commit; main stays clean)
         # Audit F-22: previously this committed bundled .a files to main with

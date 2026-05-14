@@ -11,6 +11,14 @@ concurrency:
 jobs:
   publish:
     runs-on: macos-14
+    permissions:
+      # Audit F-15: SLSA build-provenance attestation needs an OIDC token
+      # exchanged for a Sigstore signing cert, plus write access to push the
+      # attestation. `contents: write` is needed to push the release tag.
+      # (The Maven Central artifacts are also GPG-signed via OSSRH credentials.)
+      id-token: write
+      attestations: write
+      contents: write
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
@@ -165,6 +173,11 @@ jobs:
           echo "=== JAR contents (native libs) ==="
           jar tf build/libs/zerodev-aa-jvm-${{ env.VERSION }}.jar | grep -E "(darwin|linux|android)" || true
 
+      - name: Attest build provenance for JVM JAR (audit F-15)
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32  # v4.1.0
+        with:
+          subject-path: 'bindings/kotlin/build/libs/zerodev-aa-jvm-${{ env.VERSION }}.jar'
+
       - name: Publish JVM JAR to Maven Central
         env:
           OSSRH_USERNAME: ${{ secrets.OSSRH_USERNAME }}
@@ -175,7 +188,17 @@ jobs:
           cd bindings/kotlin
           ./gradlew :publishToCentralPortal
 
-      - name: Build and publish Android AAR to Maven Central
+      - name: Build Android AAR
+        run: |
+          cd bindings/kotlin
+          ./gradlew :android:assembleRelease
+
+      - name: Attest build provenance for Android AAR (audit F-15)
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32  # v4.1.0
+        with:
+          subject-path: 'bindings/kotlin/android/build/outputs/aar/*.aar'
+
+      - name: Publish Android AAR to Maven Central
         env:
           OSSRH_USERNAME: ${{ secrets.OSSRH_USERNAME }}
           OSSRH_PASSWORD: ${{ secrets.OSSRH_PASSWORD }}
@@ -183,7 +206,15 @@ jobs:
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
           cd bindings/kotlin
-          ./gradlew :android:assembleRelease :android:publishToCentralPortal
+          ./gradlew :android:publishToCentralPortal
+
+      - name: Generate SBOM (audit F-15) — uploaded as workflow artifact for inspection
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0.24.0
+        with:
+          path: bindings/kotlin
+          format: cyclonedx-json
+          artifact-name: sbom-kotlin.cdx.json
+          upload-release-assets: false
 
       - name: Tag release
         run: |

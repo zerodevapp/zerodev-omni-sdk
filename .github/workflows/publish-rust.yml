@@ -11,6 +11,13 @@ concurrency:
 jobs:
   native-libs:
     runs-on: macos-14
+    permissions:
+      # Audit F-15: SLSA build-provenance attestation needs an OIDC token
+      # exchanged for a Sigstore signing cert, plus write access to push the
+      # attestation to GitHub's attestation store and the release.
+      id-token: write
+      attestations: write
+      contents: write
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     outputs:
@@ -132,6 +139,25 @@ jobs:
           gh release create "$TAG" dist/*.tar.gz \
             --title "Native libraries v${VERSION}" \
             --notes "Prebuilt static libraries for Rust binding (immutable; SHA-256 pinned in native-libs.sha256)."
+
+      - name: Attest build provenance (audit F-15)
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32  # v4.1.0
+        with:
+          subject-path: 'dist/*.tar.gz'
+
+      - name: Generate SBOM (audit F-15)
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0.24.0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: dist/sbom.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Attach SBOM to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ steps.version.outputs.tag }}" dist/sbom.cdx.json
 
   publish:
     needs: native-libs

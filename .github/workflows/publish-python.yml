@@ -11,6 +11,13 @@ concurrency:
 jobs:
   publish:
     runs-on: macos-14
+    permissions:
+      # Audit F-15: SLSA build-provenance attestation needs an OIDC token
+      # exchanged for a Sigstore signing cert, plus write access to push the
+      # attestation to GitHub's attestation store.
+      id-token: write
+      attestations: write
+      contents: read
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
@@ -99,6 +106,11 @@ jobs:
           echo "=== Built packages ==="
           ls -la dist/
 
+      - name: Attest build provenance (audit F-15)
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32  # v4.1.0
+        with:
+          subject-path: 'bindings/python/dist/*'
+
       - name: Publish to PyPI
         env:
           TWINE_USERNAME: __token__
@@ -106,6 +118,14 @@ jobs:
         run: |
           cd bindings/python
           twine upload dist/*
+
+      - name: Generate SBOM (audit F-15) — uploaded as workflow artifact for inspection
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0.24.0
+        with:
+          path: bindings/python
+          format: cyclonedx-json
+          artifact-name: sbom-python.cdx.json
+          upload-release-assets: false
 
       - name: Tag release
         run: |
