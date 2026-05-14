@@ -4,8 +4,11 @@ on:
   workflow_dispatch: {}
   workflow_call: {}
 
+# Serialize concurrent publishes — the version-bump step reads existing tags
+# and races would mint duplicate versions. (Tag-only commits, see below, mean
+# we no longer race over a shared main ref.)
 concurrency:
-  group: publish-main
+  group: publish-swift
   cancel-in-progress: false
 
 jobs:
@@ -172,30 +175,33 @@ jobs:
           name: ZeroDevAA.xcframework
           path: dist/ZeroDevAA.xcframework.zip
 
-      - name: Update Package.swift and create tag
+      - name: Update Package.swift and tag (tag-only commit; main stays clean)
+        # Audit F-22: previously this committed Package.swift's url + checksum
+        # to main with `[skip ci]`. With the zip and the matching checksum
+        # being produced by the same workflow run, SPM's checksum verification
+        # provided zero defense against a compromised workflow. The release
+        # commit now lives only at the tag ref — `git push origin <tag>`
+        # pushes the tag + the commit it points at, without advancing main.
+        # SPM consumers resolve via the tag and see the updated Package.swift;
+        # main keeps its placeholder url/checksum.
         run: |
           TAG="${{ env.TAG }}"
-          URL="https://github.com/${{ github.repository }}/releases/download/$TAG/ZeroDevAA.xcframework.zip"
 
-          # Skip if tag already exists
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists — skipping"
-            exit 0
+          if git rev-parse "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::error::Tag ${TAG} already exists. Swift release tags are immutable."
+            exit 1
           fi
 
-          # Update root Package.swift with correct checksum + URL
+          URL="https://github.com/${{ github.repository }}/releases/download/$TAG/ZeroDevAA.xcframework.zip"
+
           sed -i '' "s|url: \".*ZeroDevAA.xcframework.zip\"|url: \"$URL\"|" Package.swift
           sed -i '' "s|checksum: \".*\"|checksum: \"${{ env.CHECKSUM }}\"|" Package.swift
 
-          # Commit to main
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Package.swift
-          git commit -m "Release $TAG — update xcframework checksum [skip ci]"
-          git pull --rebase origin main
-          git push origin main
+          git commit -m "release(swift): xcframework $TAG"
 
-          # Create tag on the commit that has the correct checksum
           git tag "$TAG"
           git push origin "$TAG"
 

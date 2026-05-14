@@ -2,8 +2,8 @@ name: Release all
 
 # Umbrella workflow that triggers every language's publish workflow in one click.
 # Each called workflow handles its own version bump, native build, registry push,
-# and tag creation. Workflows that push commits to main share the `publish-main`
-# concurrency group so they serialize and avoid stomping on each other's pushes.
+# and tag creation. After F-22, all release commits are tag-only (no main push),
+# so the workflows are mutually independent and can run in parallel.
 #
 # Run via the Actions UI or:
 #   gh workflow run release-all.yml
@@ -12,14 +12,14 @@ on:
   workflow_dispatch: {}
 
 jobs:
-  # Swift first — it pushes a checksum commit to main and creates the xcframework
-  # release asset that the Swift SDK consumers fetch via SPM.
+  # Swift xcframework: tag-only commit carrying the matching Package.swift
+  # checksum, plus a GitHub Release asset for SPM consumers.
   build-xcframework:
     uses: ./.github/workflows/build-xcframework.yml
     secrets: inherit
 
-  # Go pushes a commit to main with the rebuilt .a files. Sharing `publish-main`
-  # concurrency group with build-xcframework ensures only one main-pusher at a time.
+  # Go: tag-only commit carrying the rebuilt .a files for each target. The
+  # commit is reachable only via the tag — main never carries the bundle.
   publish-go:
     uses: ./.github/workflows/publish-go.yml
     secrets: inherit
