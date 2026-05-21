@@ -26,7 +26,7 @@ jobs:
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5.0.0
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v5.0.0
 
       - name: Determine version
         run: |
@@ -179,7 +179,7 @@ jobs:
           SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk swift build --target ZeroDevAA
 
       - name: Upload xcframework artifact
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4  # v5.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: ZeroDevAA.xcframework
           path: dist/ZeroDevAA.xcframework.zip
@@ -217,7 +217,7 @@ jobs:
           echo "TAG=$TAG" >> $GITHUB_ENV
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2.0.4
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda  # v2.0.4
         with:
           tag_name: ${{ env.TAG }}
           files: dist/ZeroDevAA.xcframework.zip
