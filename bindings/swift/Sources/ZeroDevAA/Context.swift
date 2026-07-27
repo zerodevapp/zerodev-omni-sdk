@@ -26,28 +26,28 @@ public final class Context: @unchecked Sendable {
         useURLSessionTransport()
     }
 
-    public func newAccount(signer: Signer, version: KernelVersion, index: UInt32 = 0) throws -> Account {
-        var out: OpaquePointer?
-        let status = aa_account_create(ptr, signer.ptr, aa_kernel_version(rawValue: UInt32(version.rawValue)), index, &out)
-        try checkResult(status)
-        guard let p = out else { throw AAError.nullOutPtr }
-        return Account(ptr: p, context: self, signer: signer)
-    }
-
-    /// Same as ``newAccount(signer:version:index:)`` but pins the sender
-    /// address to `address` instead of counterfactually deriving it from
-    /// `(signer, version, index)`. Use this to operate a pre-existing
-    /// on-chain kernel account whose address this SDK's CREATE2 no longer
-    /// computes (e.g. a v3.1 wallet during a v3.1 → v3.3 migration).
+    /// Create a Kernel smart account.
     ///
-    /// The account is assumed already-deployed: no factory init_code is
-    /// emitted on the first UserOp. The caller is trusted; the SDK does not
-    /// verify that `address` corresponds to `signer`.
-    public func newAccount(signer: Signer, version: KernelVersion, index: UInt32 = 0, address: [UInt8]) throws -> Account {
-        precondition(address.count == 20, "address must be 20 bytes")
+    /// When `address` is `nil` (the default), the sender is derived
+    /// counterfactually via CREATE2 from `(signer, version, index)`. When
+    /// supplied, the account is pinned to that on-chain address (migration
+    /// path for kernel-version upgrades, or operating a pre-existing wallet
+    /// whose CREATE2 salt this SDK no longer computes). Pinned accounts
+    /// are assumed already-deployed; no factory init_code is emitted on
+    /// the first UserOp. The caller is trusted; the SDK does not verify
+    /// that a pinned `address` corresponds to `signer`.
+    public func newAccount(
+        signer: Signer,
+        version: KernelVersion,
+        index: UInt32 = 0,
+        address: [UInt8]? = nil
+    ) throws -> Account {
+        if let a = address {
+            precondition(a.count == 20, "address must be 20 bytes")
+        }
         var out: OpaquePointer?
-        let status = address.withUnsafeBufferPointer { buf in
-            aa_account_create_at(
+        let status = address?.withUnsafeBufferPointer { buf in
+            aa_account_create(
                 ptr,
                 signer.ptr,
                 aa_kernel_version(rawValue: UInt32(version.rawValue)),
@@ -55,7 +55,14 @@ public final class Context: @unchecked Sendable {
                 buf.baseAddress,
                 &out
             )
-        }
+        } ?? aa_account_create(
+            ptr,
+            signer.ptr,
+            aa_kernel_version(rawValue: UInt32(version.rawValue)),
+            index,
+            nil,
+            &out
+        )
         try checkResult(status)
         guard let p = out else { throw AAError.nullOutPtr }
         return Account(ptr: p, context: self, signer: signer)

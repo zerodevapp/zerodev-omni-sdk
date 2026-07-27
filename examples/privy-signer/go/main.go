@@ -87,7 +87,7 @@ func main() {
 	}
 	defer ctx.Close()
 
-	account, err := ctx.NewAccount(signer, aa.KernelV3_3, 0)
+	account, err := ctx.NewAccount(signer, aa.KernelV3_3, 0, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating account: %v\n", err)
 		os.Exit(1)

@@ -101,7 +101,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         &project_id, "", "", 11155111,
         GasMiddleware::ZeroDev, PaymasterMiddleware::ZeroDev,
     )?;
-    let account = ctx.new_account(&signer, KernelVersion::V3_3, 0)?;
+    let account = ctx.new_account(&signer, KernelVersion::V3_3, 0, None)?;
     let addr = account.get_address()?;
     println!("Smart account: {addr}");
 

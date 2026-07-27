@@ -49,7 +49,7 @@ fn send_userop_sepolia() {
     // Step 2: Create signer + account (Kernel v3.3, index 0)
     let signer = Signer::local(&private_key).expect("Signer::local failed");
     let account = ctx
-        .new_account(&signer, KernelVersion::V3_3, 0)
+        .new_account(&signer, KernelVersion::V3_3, 0, None)
         .expect("new_account failed");
 
     // Step 3: Get address

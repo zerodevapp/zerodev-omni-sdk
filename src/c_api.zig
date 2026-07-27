@@ -691,57 +691,21 @@ pub const AccountImpl = struct {
     }
 };
 
-pub export fn aa_account_create(
-    ctx: ?*ContextImpl,
-    signer: ?*SignerImpl,
-    version: c_int,
-    index: u32,
-    out: ?*?*AccountImpl,
-) callconv(.c) Status {
-    if (out == null) return .null_out_ptr;
-    const c = ctx orelse return .null_context;
-    const s = signer orelse return .invalid_signer;
-
-    const allocator = c.allocator;
-
-    const kv = KernelVersion.fromInt(@intCast(version)) orelse {
-        setLastError("invalid kernel version: {d}", .{version});
-        return .invalid_kernel_version;
-    };
-
-    // Signer is already heap-allocated — vtable pointer is stable
-    const owner_addr = Address.fromBytes(s.getSigner().getAddress());
-    const sender_addr = create2.getKernelAddress(owner_addr, @as(u256, index), kv) catch {
-        setLastError("failed to compute kernel address", .{});
-        return .get_address_failed;
-    };
-
-    const impl = allocator.create(AccountImpl) catch {
-        return .out_of_memory;
-    };
-    impl.* = .{
-        .context = c,
-        .signer = s,
-        .ecdsa = EcdsaValidator.init(s.getSigner()),
-        .kernel_version = kv,
-        .index = index,
-        .owner_address = owner_addr,
-        .sender_address = sender_addr,
-    };
-
-    out.?.* = impl;
-    return .ok;
-}
-
-/// Same as `aa_account_create` but pins the account address explicitly instead of
-/// counterfactually deriving it from (signer, version, index). Used for migrations
-/// where an existing on-chain kernel account (e.g. v3.1) must continue to be
-/// operated via this SDK — the caller passes the legacy address as-is.
+/// Create a Kernel smart account.
 ///
-/// ponytail: no on-chain check that `address` actually belongs to this signer /
-/// kernel version — the caller is trusting themselves. Add a `verify` flag that
-/// re-derives and compares if we ever see foot-gun reports.
-pub export fn aa_account_create_at(
+/// `address` may be NULL, in which case the sender address is derived
+/// counterfactually via CREATE2 from `(owner_address, index, version)` — the
+/// standard flow. When non-NULL, it explicitly pins the account to an
+/// existing on-chain address; the SDK marks the account as `pinned` and
+/// skips factory init_code on the first UserOp (the account is assumed
+/// already-deployed). This is the migration path for legacy kernel wallets
+/// whose CREATE2 salt / implementation this SDK no longer computes.
+///
+/// ponytail: no on-chain check that a pinned `address` actually belongs to
+/// this signer / kernel version — the caller is trusting themselves. Add a
+/// `verify` flag that re-derives and compares if we ever see foot-gun
+/// reports.
+pub export fn aa_account_create(
     ctx: ?*ContextImpl,
     signer: ?*SignerImpl,
     version: c_int,
@@ -750,7 +714,6 @@ pub export fn aa_account_create_at(
     out: ?*?*AccountImpl,
 ) callconv(.c) Status {
     if (out == null) return .null_out_ptr;
-    if (address == null) return .null_out_ptr;
     const c = ctx orelse return .null_context;
     const s = signer orelse return .invalid_signer;
 
@@ -760,7 +723,14 @@ pub export fn aa_account_create_at(
     };
 
     const owner_addr = Address.fromBytes(s.getSigner().getAddress());
-    const sender_addr = Address.fromBytes(address.?[0..20].*);
+    const pinned = address != null;
+    const sender_addr = if (address) |a|
+        Address.fromBytes(a[0..20].*)
+    else
+        create2.getKernelAddress(owner_addr, @as(u256, index), kv) catch {
+            setLastError("failed to compute kernel address", .{});
+            return .get_address_failed;
+        };
 
     const impl = c.allocator.create(AccountImpl) catch return .out_of_memory;
     impl.* = .{
@@ -771,7 +741,7 @@ pub export fn aa_account_create_at(
         .index = index,
         .owner_address = owner_addr,
         .sender_address = sender_addr,
-        .pinned = true,
+        .pinned = pinned,
     };
 
     out.?.* = impl;
@@ -1620,4 +1590,63 @@ pub export fn aa_wait_for_user_operation_receipt(
 
     setLastError("receipt polling timed out after {d}ms", .{timeout});
     return .receipt_timeout;
+}
+
+// ---- Tests (offline; exercise the address-pinning branch of aa_account_create) ----
+
+const testing = std.testing;
+
+fn testCreateCtxAndSigner() struct { ctx: *ContextImpl, signer: *SignerImpl } {
+    var ctx_out: ?*ContextImpl = null;
+    _ = aa_context_create("proj", "", "", 11155111, &ctx_out);
+
+    // Deterministic key so the CREATE2 derivation is reproducible below.
+    var pk: [32]u8 = undefined;
+    for (&pk, 0..) |*b, i| b.* = @intCast(i + 1);
+    var signer_out: ?*SignerImpl = null;
+    _ = aa_signer_local(&pk, &signer_out);
+
+    return .{ .ctx = ctx_out.?, .signer = signer_out.? };
+}
+
+test "aa_account_create: nil address → counterfactual CREATE2 derivation" {
+    const env = testCreateCtxAndSigner();
+    defer _ = aa_context_destroy(env.ctx);
+    defer aa_signer_destroy(env.signer);
+
+    var acc: ?*AccountImpl = null;
+    const status = aa_account_create(env.ctx, env.signer, 0, 0, null, &acc);
+    try testing.expectEqual(Status.ok, status);
+    defer _ = aa_account_destroy(acc);
+
+    try testing.expect(!acc.?.pinned);
+
+    // sender_address must equal the CREATE2-derived address for this signer.
+    const expected = try create2.getKernelAddress(acc.?.owner_address, 0, .v3_3);
+    try testing.expectEqualSlices(u8, &expected.bytes, &acc.?.sender_address.bytes);
+}
+
+test "aa_account_create: non-nil address → pinned, sender = passed bytes" {
+    const env = testCreateCtxAndSigner();
+    defer _ = aa_context_destroy(env.ctx);
+    defer aa_signer_destroy(env.signer);
+
+    // Legacy v3.1 address the caller wants to keep operating post-upgrade.
+    const pinned_bytes = [_]u8{
+        0xde, 0xad, 0xbe, 0xef, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05,
+        0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+    };
+
+    var acc: ?*AccountImpl = null;
+    const status = aa_account_create(env.ctx, env.signer, 0, 0, &pinned_bytes, &acc);
+    try testing.expectEqual(Status.ok, status);
+    defer _ = aa_account_destroy(acc);
+
+    try testing.expect(acc.?.pinned);
+    try testing.expectEqualSlices(u8, &pinned_bytes, &acc.?.sender_address.bytes);
+
+    // aa_account_get_address must return the pinned address, not counterfactual.
+    var addr_out: [20]u8 = undefined;
+    try testing.expectEqual(Status.ok, aa_account_get_address(acc, &addr_out));
+    try testing.expectEqualSlices(u8, &pinned_bytes, &addr_out);
 }

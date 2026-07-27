@@ -60,7 +60,7 @@ func TestSendUserOpSepolia(t *testing.T) {
 	}
 	defer signer.Close()
 
-	account, err := ctx.NewAccount(signer, aa.KernelV3_3, 0)
+	account, err := ctx.NewAccount(signer, aa.KernelV3_3, 0, nil)
 	if err != nil {
 		t.Fatalf("NewAccount failed: %v", err)
 	}

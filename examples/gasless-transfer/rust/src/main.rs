@@ -77,7 +77,7 @@ fn main() {
 
     // ── 4. Create Kernel v3.3 account ──────────────────────────────────
     let account = ctx
-        .new_account(&signer, KernelVersion::V3_3, 0)
+        .new_account(&signer, KernelVersion::V3_3, 0, None)
         .unwrap_or_else(|e| {
             eprintln!("Failed to create account: {}", e);
             process::exit(1);

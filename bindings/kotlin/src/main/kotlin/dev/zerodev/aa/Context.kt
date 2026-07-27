@@ -29,38 +29,30 @@ class Context private constructor(internal val ptr: Long) : AutoCloseable {
         }
     }
 
+    /**
+     * Create a Kernel smart account.
+     *
+     * When [address] is null (the default), the sender is derived
+     * counterfactually via CREATE2 from `(signer, version, index)`. When
+     * supplied as a 20-byte array, the account is pinned to that on-chain
+     * address (migration path for kernel-version upgrades or legacy wallets
+     * whose CREATE2 salt this SDK no longer computes). Pinned accounts are
+     * assumed already-deployed; no factory init_code is emitted on the
+     * first UserOp. The caller is trusted; the SDK does not verify that a
+     * pinned [address] corresponds to [signer].
+     */
     fun newAccount(
         signer: Signer,
         version: KernelVersion,
         index: Int = 0,
+        address: ByteArray? = null,
     ): Account {
         check(!closed) { "Context is closed" }
+        if (address != null) {
+            require(address.size == 20) { "address must be 20 bytes, got ${address.size}" }
+        }
         val out = LongArray(1)
-        checkStatus(NativeLib.nAccountCreate(ptr, signer.ptr, version.code, index, out))
-        return Account(out[0], this, signer)
-    }
-
-    /**
-     * Create an account pinned to an existing on-chain [address] instead of
-     * counterfactually deriving one from `(signer, version, index)`. Use this
-     * to operate a pre-existing kernel account whose address this SDK's
-     * CREATE2 no longer computes (e.g. a v3.1 wallet during a v3.1 → v3.3
-     * migration).
-     *
-     * The account is assumed already-deployed: no factory init_code is
-     * emitted on the first UserOp. The caller is trusted; the SDK does not
-     * verify that [address] corresponds to [signer].
-     */
-    fun newAccountAt(
-        signer: Signer,
-        version: KernelVersion,
-        index: Int = 0,
-        address: ByteArray,
-    ): Account {
-        check(!closed) { "Context is closed" }
-        require(address.size == 20) { "address must be 20 bytes, got ${address.size}" }
-        val out = LongArray(1)
-        checkStatus(NativeLib.nAccountCreateAt(ptr, signer.ptr, version.code, index, address, out))
+        checkStatus(NativeLib.nAccountCreate(ptr, signer.ptr, version.code, index, address, out))
         return Account(out[0], this, signer)
     }
 

@@ -311,6 +311,15 @@ impl Context {
 
     /// Create a new Kernel account bound to this context.
     ///
+    /// `address` may be `None` — the sender address is then derived
+    /// counterfactually via CREATE2 from `(signer, version, index)`, the
+    /// standard flow. When `Some`, the account is pinned to that on-chain
+    /// address (migration path for kernel-version upgrades, or operating a
+    /// pre-existing wallet whose CREATE2 salt this SDK no longer computes).
+    /// Pinned accounts are assumed already-deployed; no factory init_code
+    /// is emitted on the first UserOp. The caller is trusted — the SDK
+    /// does not verify that a pinned address corresponds to this signer.
+    ///
     /// Both `self` (the Context) and `signer` must outlive the returned
     /// [`Account`] — enforced at compile time via the shared `'a` lifetime.
     pub fn new_account<'a>(
@@ -318,48 +327,19 @@ impl Context {
         signer: &'a Signer,
         version: KernelVersion,
         index: u32,
+        address: Option<[u8; 20]>,
     ) -> Result<Account<'a>> {
         let mut acc: *mut ffi::aa_account_t = ptr::null_mut();
+        let addr_ptr = address
+            .as_ref()
+            .map_or(ptr::null(), |a| a.as_ptr());
         unsafe {
             error::check(ffi::aa_account_create(
                 self.ptr,
                 signer.ptr,
                 version.to_c(),
                 index,
-                &mut acc,
-            ))?;
-        }
-        Ok(Account {
-            ptr: acc,
-            _ctx: self,
-            _signer: signer,
-        })
-    }
-
-    /// Same as [`new_account`], but pins the account's sender address to
-    /// `address` instead of counterfactually deriving it from
-    /// `(signer, version, index)`. Use this to operate a pre-existing
-    /// on-chain kernel account whose address this SDK's CREATE2 no longer
-    /// computes (e.g. a v3.1 wallet during a v3.1 → v3.3 migration).
-    ///
-    /// The account is assumed already-deployed: no factory init_code is
-    /// emitted on the first UserOp. The caller is trusted; the SDK does not
-    /// verify that `address` corresponds to this signer.
-    pub fn new_account_at<'a>(
-        &'a self,
-        signer: &'a Signer,
-        version: KernelVersion,
-        index: u32,
-        address: [u8; 20],
-    ) -> Result<Account<'a>> {
-        let mut acc: *mut ffi::aa_account_t = ptr::null_mut();
-        unsafe {
-            error::check(ffi::aa_account_create_at(
-                self.ptr,
-                signer.ptr,
-                version.to_c(),
-                index,
-                address.as_ptr(),
+                addr_ptr,
                 &mut acc,
             ))?;
         }
@@ -427,7 +407,7 @@ impl Drop for Context {
 /// use zerodev_aa::{Context, GasMiddleware, KernelVersion, PaymasterMiddleware, Signer};
 /// # fn demo(ctx: &Context) -> Result<(), Box<dyn std::error::Error>> {
 /// let signer = Signer::local(&[0x11u8; 32])?;
-/// let account = ctx.new_account(&signer, KernelVersion::V3_3, 0)?;
+/// let account = ctx.new_account(&signer, KernelVersion::V3_3, 0, None)?;
 /// drop(signer); // F-09 tripwire: must NOT compile while `account` is alive.
 /// let _ = account.get_address()?;
 /// # Ok(())

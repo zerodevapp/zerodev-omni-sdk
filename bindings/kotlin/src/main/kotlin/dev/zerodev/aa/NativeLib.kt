@@ -28,18 +28,14 @@ internal object NativeLib {
     @JvmStatic external fun nSignerCustomCleanup(vtablePtr: Long, ctxPtr: Long)
 
     /* ---- Account ---- */
-    @JvmStatic external fun nAccountCreate(
-        ctxPtr: Long, signerPtr: Long, version: Int, index: Int, out: LongArray,
-    ): Int
-
     /**
-     * Create an account pinned to an existing on-chain address instead of
-     * counterfactually deriving one. Migration path for legacy kernel wallets
-     * whose CREATE2 salt / impl this SDK no longer computes (e.g. v3.1).
+     * Create a Kernel account. `address` may be null (counterfactual CREATE2)
+     * or a 20-byte array (pinned to that on-chain address, used for kernel-
+     * version upgrades / migration from older CREATE2 salts).
      */
-    @JvmStatic external fun nAccountCreateAt(
+    @JvmStatic external fun nAccountCreate(
         ctxPtr: Long, signerPtr: Long, version: Int, index: Int,
-        address: ByteArray, out: LongArray,
+        address: ByteArray?, out: LongArray,
     ): Int
 
     /**

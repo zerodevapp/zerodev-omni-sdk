@@ -105,7 +105,7 @@ test "C API: aa_send_userop full pipeline on Sepolia" {
 
     // Step 3: Create account (Kernel v3.3, index 0)
     var account: ?*c_api.AccountImpl = null;
-    const acc_status = c_api.aa_account_create(ctx, signer, c_api.AA_KERNEL_V3_3, 0, &account);
+    const acc_status = c_api.aa_account_create(ctx, signer, c_api.AA_KERNEL_V3_3, 0, null, &account);
     try std.testing.expectEqual(c_api.Status.ok, acc_status);
     try std.testing.expect(account != null);
     defer _ = c_api.aa_account_destroy(account);

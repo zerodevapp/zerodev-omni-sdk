@@ -49,7 +49,7 @@ func main() {
 	defer signer.Close()
 
 	// Create account (Kernel v3.3, index 0)
-	account, err := ctx.NewAccount(signer, aa.KernelV3_3, 0)
+	account, err := ctx.NewAccount(signer, aa.KernelV3_3, 0, nil)
 	if err != nil {
 		fmt.Printf("Error creating account: %v\n", err)
 		return

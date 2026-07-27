@@ -247,25 +247,22 @@ void aa_signer_destroy(aa_signer_t *signer);
 
 /* ---- Account (Kernel v3.x + ECDSA validator) ---- */
 
+/** Create a Kernel smart account.
+ *
+ * `address` may be NULL, in which case the sender address is derived
+ * counterfactually via CREATE2 from `(owner, index, version)` — the standard
+ * flow. When non-NULL, it pins the account to an existing on-chain address
+ * (kernel-version upgrade paths, or operating a wallet created with an older
+ * Kernel version whose CREATE2 salt this SDK no longer computes). The
+ * account is then assumed already-deployed and no factory init_code is
+ * emitted on the first UserOp. The caller is trusted; the SDK does not
+ * verify that a pinned `address` actually corresponds to this signer. */
 aa_status aa_account_create(aa_context_t *ctx,
                             aa_signer_t *signer,
                             aa_kernel_version version,
                             uint32_t index,
+                            const uint8_t address[20],
                             aa_account_t **out);
-
-/** Create an account pinned to an existing on-chain address instead of
- * counterfactually deriving one from (signer, version, index). Use this to
- * operate a wallet that was created by an older Kernel version (e.g. v3.1)
- * whose CREATE2 salt / implementation this SDK no longer computes. The
- * account is assumed to already be deployed — no factory init_code is
- * emitted on the first UserOp. The caller is trusted; the SDK does not
- * verify that `address` actually corresponds to this signer. */
-aa_status aa_account_create_at(aa_context_t *ctx,
-                               aa_signer_t *signer,
-                               aa_kernel_version version,
-                               uint32_t index,
-                               const uint8_t address[20],
-                               aa_account_t **out);
 
 /** Create an EIP-7702 account. The account's address is the signer's EOA
  * address; there is no CREATE2, no init code, and no index parameter. On the

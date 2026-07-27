@@ -2,6 +2,7 @@
 
 import ctypes
 import json as _json
+from typing import Optional
 
 from ._ffi import _lib, _Context, _Signer, _Account, _UserOp, AaCallT
 from .error import check
@@ -25,17 +26,15 @@ class Account:
         self._signer = signer  # F-09 retention; keeps the signer alive
 
     @staticmethod
-    def _create(ctx, signer, version: int, index: int) -> "Account":
+    def _create(ctx, signer, version: int, index: int, address: Optional[bytes] = None) -> "Account":
+        addr_arg = None
+        if address is not None:
+            if len(address) != 20:
+                raise ValueError(f"address must be 20 bytes, got {len(address)}")
+            addr_arg = (ctypes.c_uint8 * 20)(*address)
         ptr = ctypes.POINTER(_Account)()
-        check(_lib.aa_account_create(ctx._ptr, signer._ptr, version, index, ctypes.byref(ptr)))
-        return Account(ptr, signer)
-
-    @staticmethod
-    def _create_at(ctx, signer, version: int, index: int, address: bytes) -> "Account":
-        addr_buf = (ctypes.c_uint8 * 20)(*address)
-        ptr = ctypes.POINTER(_Account)()
-        check(_lib.aa_account_create_at(
-            ctx._ptr, signer._ptr, version, index, addr_buf, ctypes.byref(ptr),
+        check(_lib.aa_account_create(
+            ctx._ptr, signer._ptr, version, index, addr_arg, ctypes.byref(ptr),
         ))
         return Account(ptr, signer)
 

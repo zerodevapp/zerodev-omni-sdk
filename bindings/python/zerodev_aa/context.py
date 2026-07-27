@@ -1,6 +1,7 @@
 """Context — holds RPC URLs, chain config, and middleware."""
 
 import ctypes
+from typing import Optional
 
 from ._ffi import _lib, _Context, _Account
 from .error import check
@@ -44,34 +45,23 @@ class Context:
         signer: Signer,
         version: KernelVersion = KernelVersion.V3_3,
         index: int = 0,
+        address: Optional[bytes] = None,
     ) -> Account:
         """Create a Kernel smart account.
+
+        When ``address`` is ``None`` (the default), the sender address is
+        derived counterfactually via CREATE2 from ``(signer, version,
+        index)``. When supplied as 20 raw bytes, the account is pinned to
+        that on-chain address (migration path for kernel-version upgrades
+        or legacy wallets whose CREATE2 salt this SDK no longer computes).
+        Pinned accounts are assumed already-deployed; no factory init_code
+        is emitted on the first UserOp. The caller is trusted; the SDK
+        does not verify that a pinned ``address`` corresponds to ``signer``.
 
         The returned :class:`Account` holds a strong reference to ``signer``
         (audit F-09) so GC won't finalize it while the account is alive.
         """
-        return Account._create(self, signer, int(version), index)
-
-    def new_account_at(
-        self,
-        signer: Signer,
-        address: bytes,
-        version: KernelVersion = KernelVersion.V3_3,
-        index: int = 0,
-    ) -> Account:
-        """Create a Kernel smart account pinned to an explicit on-chain
-        ``address`` instead of counterfactually deriving it from
-        ``(signer, version, index)``.
-
-        Use this to operate a pre-existing account whose address this SDK's
-        CREATE2 no longer computes (e.g. a v3.1 wallet during a v3.1 → v3.3
-        migration). The account is assumed already-deployed: no factory
-        init_code is emitted on the first UserOp. The caller is trusted;
-        the SDK does not verify that ``address`` corresponds to ``signer``.
-        """
-        if len(address) != 20:
-            raise ValueError(f"address must be 20 bytes, got {len(address)}")
-        return Account._create_at(self, signer, int(version), index, address)
+        return Account._create(self, signer, int(version), index, address)
 
     def new_account_7702(
         self,

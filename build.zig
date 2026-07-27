@@ -152,9 +152,17 @@ pub fn build(b: *std.Build) void {
     });
     const run_transport_tests = b.addRunArtifact(transport_tests);
 
+    // c_api tests: same reason as transport — c_api isn't imported by
+    // src/root.zig, so its inline tests need their own compilation.
+    const c_api_tests = b.addTest(.{
+        .root_module = c_api_mod,
+    });
+    const run_c_api_tests = b.addRunArtifact(c_api_tests);
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_tests.step);
     test_step.dependOn(&run_transport_tests.step);
+    test_step.dependOn(&run_c_api_tests.step);
 
     // ---- E2E tests (require local Anvil + Alto) ----
 

@@ -172,17 +172,8 @@ extern "C" {
         out: *mut aa_authorization_t,
     ) -> aa_status;
 
-    // Account
+    // Account. `address` may be null (counterfactual CREATE2) or non-null (pin).
     pub(crate) fn aa_account_create(
-        ctx: *mut aa_context_t,
-        signer: *mut aa_signer_t,
-        version: i32,
-        index: u32,
-        out: *mut *mut aa_account_t,
-    ) -> aa_status;
-
-    // Pinned address variant (migration path for legacy on-chain accounts).
-    pub(crate) fn aa_account_create_at(
         ctx: *mut aa_context_t,
         signer: *mut aa_signer_t,
         version: i32,
