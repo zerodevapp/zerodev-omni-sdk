@@ -53,7 +53,7 @@ public final class Context: @unchecked Sendable {
                 aa_kernel_version(rawValue: UInt32(version.rawValue)),
                 index,
                 buf.baseAddress,
-                &out,
+                &out
             )
         }
         try checkResult(status)
