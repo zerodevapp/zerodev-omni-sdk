@@ -679,6 +679,12 @@ pub const AccountImpl = struct {
     mode: AccountMode = .kernel_create2,
     /// Cached on-chain delegation status for EIP-7702 accounts. Null until first lookup.
     delegation_installed: ?bool = null,
+    /// Set by `aa_account_create_at`: caller pinned the sender address, so the
+    /// account is assumed already-deployed on-chain. Suppresses factory init_code
+    /// generation in both the high-level and low-level UserOp build paths — a
+    /// legacy v3.1 CREATE2 address would receive the wrong (v3.3) factory
+    /// calldata otherwise, and the account exists so no init is needed anyway.
+    pinned: bool = false,
 
     pub fn getValidator(self: *AccountImpl) Validator {
         return self.ecdsa.validator();
@@ -721,6 +727,51 @@ pub export fn aa_account_create(
         .index = index,
         .owner_address = owner_addr,
         .sender_address = sender_addr,
+    };
+
+    out.?.* = impl;
+    return .ok;
+}
+
+/// Same as `aa_account_create` but pins the account address explicitly instead of
+/// counterfactually deriving it from (signer, version, index). Used for migrations
+/// where an existing on-chain kernel account (e.g. v3.1) must continue to be
+/// operated via this SDK — the caller passes the legacy address as-is.
+///
+/// ponytail: no on-chain check that `address` actually belongs to this signer /
+/// kernel version — the caller is trusting themselves. Add a `verify` flag that
+/// re-derives and compares if we ever see foot-gun reports.
+pub export fn aa_account_create_at(
+    ctx: ?*ContextImpl,
+    signer: ?*SignerImpl,
+    version: c_int,
+    index: u32,
+    address: ?[*]const u8,
+    out: ?*?*AccountImpl,
+) callconv(.c) Status {
+    if (out == null) return .null_out_ptr;
+    if (address == null) return .null_out_ptr;
+    const c = ctx orelse return .null_context;
+    const s = signer orelse return .invalid_signer;
+
+    const kv = KernelVersion.fromInt(@intCast(version)) orelse {
+        setLastError("invalid kernel version: {d}", .{version});
+        return .invalid_kernel_version;
+    };
+
+    const owner_addr = Address.fromBytes(s.getSigner().getAddress());
+    const sender_addr = Address.fromBytes(address.?[0..20].*);
+
+    const impl = c.allocator.create(AccountImpl) catch return .out_of_memory;
+    impl.* = .{
+        .context = c,
+        .signer = s,
+        .ecdsa = EcdsaValidator.init(s.getSigner()),
+        .kernel_version = kv,
+        .index = index,
+        .owner_address = owner_addr,
+        .sender_address = sender_addr,
+        .pinned = true,
     };
 
     out.?.* = impl;
@@ -921,7 +972,7 @@ pub export fn aa_userop_build(
     // build/hash/sign/to_json pipeline produce a valid on-chain first op.
     var init_code: []u8 = &[_]u8{};
     var eip7702_auth: ?core.Authorization = null;
-    if (acc.mode == .kernel_create2) {
+    if (acc.mode == .kernel_create2 and !acc.pinned) {
         const factory_data = create2.buildFactoryCalldata(
             a,
             acc.owner_address,
@@ -940,7 +991,7 @@ pub export fn aa_userop_build(
         };
         @memcpy(init_code[0..20], &meta_factory.bytes);
         @memcpy(init_code[20..], factory_data);
-    } else {
+    } else if (acc.mode == .eip7702) {
         const rpc_url: []const u8 = if (acc.context.bundler_url.len > 0)
             acc.context.bundler_url
         else
@@ -1305,7 +1356,10 @@ pub export fn aa_send_userop(
     var init_code: []u8 = &[_]u8{};
     var eip7702_auth: ?core.Authorization = null;
     if (acc.mode == .kernel_create2) {
-        if (nonce == 0) {
+        // Pinned accounts are assumed already-deployed; nonce==0 for a
+        // never-touched pinned account would still be wrong to autoprovision
+        // (wrong factory version, or a legacy v3.1 impl).
+        if (nonce == 0 and !acc.pinned) {
             const factory_data = create2.buildFactoryCalldata(a, acc.owner_address, @as(u256, acc.index), acc.kernel_version) catch {
                 setLastError("failed to build factory calldata", .{});
                 return .build_userop_failed;

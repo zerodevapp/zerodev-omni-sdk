@@ -338,6 +338,28 @@ JNIEXPORT jint JNICALL Java_dev_zerodev_aa_NativeLib_nAccountCreate(
     return status;
 }
 
+JNIEXPORT jint JNICALL Java_dev_zerodev_aa_NativeLib_nAccountCreateAt(
+    JNIEnv *env, jclass cls,
+    jlong ctx_ptr, jlong signer_ptr, jint version, jint index,
+    jbyteArray address, jlongArray out)
+{
+    uint8_t addr[20];
+    (*env)->GetByteArrayRegion(env, address, 0, 20, (jbyte *)addr);
+
+    aa_account_t *account = NULL;
+    jint status = (jint)aa_account_create_at(
+        (aa_context_t *)(intptr_t)ctx_ptr,
+        (aa_signer_t *)(intptr_t)signer_ptr,
+        (aa_kernel_version)version,
+        (uint32_t)index,
+        addr,
+        &account);
+
+    jlong ptr = (jlong)(intptr_t)account;
+    (*env)->SetLongArrayRegion(env, out, 0, 1, &ptr);
+    return status;
+}
+
 JNIEXPORT jint JNICALL Java_dev_zerodev_aa_NativeLib_nAccountCreate7702(
     JNIEnv *env, jclass cls,
     jlong ctx_ptr, jlong signer_ptr, jint version, jlongArray out)

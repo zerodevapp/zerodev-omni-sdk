@@ -33,6 +33,16 @@ internal object NativeLib {
     ): Int
 
     /**
+     * Create an account pinned to an existing on-chain address instead of
+     * counterfactually deriving one. Migration path for legacy kernel wallets
+     * whose CREATE2 salt / impl this SDK no longer computes (e.g. v3.1).
+     */
+    @JvmStatic external fun nAccountCreateAt(
+        ctxPtr: Long, signerPtr: Long, version: Int, index: Int,
+        address: ByteArray, out: LongArray,
+    ): Int
+
+    /**
      * Create an EIP-7702 account. Account address is the signer's EOA; no
      * CREATE2 / init code / index. Today only V3_3 supports 7702.
      */

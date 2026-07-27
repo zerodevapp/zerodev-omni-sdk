@@ -30,6 +30,15 @@ class Account:
         check(_lib.aa_account_create(ctx._ptr, signer._ptr, version, index, ctypes.byref(ptr)))
         return Account(ptr, signer)
 
+    @staticmethod
+    def _create_at(ctx, signer, version: int, index: int, address: bytes) -> "Account":
+        addr_buf = (ctypes.c_uint8 * 20)(*address)
+        ptr = ctypes.POINTER(_Account)()
+        check(_lib.aa_account_create_at(
+            ctx._ptr, signer._ptr, version, index, addr_buf, ctypes.byref(ptr),
+        ))
+        return Account(ptr, signer)
+
     def get_address(self) -> Address:
         """Get the counterfactual smart account address."""
         buf = (ctypes.c_uint8 * 20)()

@@ -52,6 +52,27 @@ class Context:
         """
         return Account._create(self, signer, int(version), index)
 
+    def new_account_at(
+        self,
+        signer: Signer,
+        address: bytes,
+        version: KernelVersion = KernelVersion.V3_3,
+        index: int = 0,
+    ) -> Account:
+        """Create a Kernel smart account pinned to an explicit on-chain
+        ``address`` instead of counterfactually deriving it from
+        ``(signer, version, index)``.
+
+        Use this to operate a pre-existing account whose address this SDK's
+        CREATE2 no longer computes (e.g. a v3.1 wallet during a v3.1 → v3.3
+        migration). The account is assumed already-deployed: no factory
+        init_code is emitted on the first UserOp. The caller is trusted;
+        the SDK does not verify that ``address`` corresponds to ``signer``.
+        """
+        if len(address) != 20:
+            raise ValueError(f"address must be 20 bytes, got {len(address)}")
+        return Account._create_at(self, signer, int(version), index, address)
+
     def new_account_7702(
         self,
         signer: Signer,

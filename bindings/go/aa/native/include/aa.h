@@ -253,6 +253,20 @@ aa_status aa_account_create(aa_context_t *ctx,
                             uint32_t index,
                             aa_account_t **out);
 
+/** Create an account pinned to an existing on-chain address instead of
+ * counterfactually deriving one from (signer, version, index). Use this to
+ * operate a wallet that was created by an older Kernel version (e.g. v3.1)
+ * whose CREATE2 salt / implementation this SDK no longer computes. The
+ * account is assumed to already be deployed — no factory init_code is
+ * emitted on the first UserOp. The caller is trusted; the SDK does not
+ * verify that `address` actually corresponds to this signer. */
+aa_status aa_account_create_at(aa_context_t *ctx,
+                               aa_signer_t *signer,
+                               aa_kernel_version version,
+                               uint32_t index,
+                               const uint8_t address[20],
+                               aa_account_t **out);
+
 /** Create an EIP-7702 account. The account's address is the signer's EOA
  * address; there is no CREATE2, no init code, and no index parameter. On the
  * first UserOperation the SDK signs an authorization tuple (chainId, Kernel

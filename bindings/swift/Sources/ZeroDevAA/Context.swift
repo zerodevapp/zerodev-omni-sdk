@@ -34,6 +34,33 @@ public final class Context: @unchecked Sendable {
         return Account(ptr: p, context: self, signer: signer)
     }
 
+    /// Same as ``newAccount(signer:version:index:)`` but pins the sender
+    /// address to `address` instead of counterfactually deriving it from
+    /// `(signer, version, index)`. Use this to operate a pre-existing
+    /// on-chain kernel account whose address this SDK's CREATE2 no longer
+    /// computes (e.g. a v3.1 wallet during a v3.1 → v3.3 migration).
+    ///
+    /// The account is assumed already-deployed: no factory init_code is
+    /// emitted on the first UserOp. The caller is trusted; the SDK does not
+    /// verify that `address` corresponds to `signer`.
+    public func newAccount(signer: Signer, version: KernelVersion, index: UInt32 = 0, address: [UInt8]) throws -> Account {
+        precondition(address.count == 20, "address must be 20 bytes")
+        var out: OpaquePointer?
+        let status = address.withUnsafeBufferPointer { buf in
+            aa_account_create_at(
+                ptr,
+                signer.ptr,
+                aa_kernel_version(rawValue: UInt32(version.rawValue)),
+                index,
+                buf.baseAddress,
+                &out,
+            )
+        }
+        try checkResult(status)
+        guard let p = out else { throw AAError.nullOutPtr }
+        return Account(ptr: p, context: self, signer: signer)
+    }
+
     /// Create a Kernel smart account using EIP-7702 delegation.
     ///
     /// The account's address is the signer's EOA address — there is no

@@ -181,6 +181,16 @@ extern "C" {
         out: *mut *mut aa_account_t,
     ) -> aa_status;
 
+    // Pinned address variant (migration path for legacy on-chain accounts).
+    pub(crate) fn aa_account_create_at(
+        ctx: *mut aa_context_t,
+        signer: *mut aa_signer_t,
+        version: i32,
+        index: u32,
+        address: *const u8,
+        out: *mut *mut aa_account_t,
+    ) -> aa_status;
+
     // EIP-7702: create an account whose address is the signer's EOA.
     pub(crate) fn aa_context_new_account_7702(
         ctx: *mut aa_context_t,

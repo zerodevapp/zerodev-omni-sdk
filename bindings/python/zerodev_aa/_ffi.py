@@ -203,6 +203,13 @@ _lib.aa_account_create.argtypes = [
 ]
 _lib.aa_account_create.restype = ctypes.c_int
 
+_lib.aa_account_create_at.argtypes = [
+    ctypes.POINTER(_Context), ctypes.POINTER(_Signer), ctypes.c_int, ctypes.c_uint32,
+    ctypes.POINTER(ctypes.c_uint8),
+    ctypes.POINTER(ctypes.POINTER(_Account)),
+]
+_lib.aa_account_create_at.restype = ctypes.c_int
+
 _lib.aa_context_new_account_7702.argtypes = [
     ctypes.POINTER(_Context), ctypes.POINTER(_Signer), ctypes.c_int,
     ctypes.POINTER(ctypes.POINTER(_Account))

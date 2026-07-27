@@ -409,6 +409,37 @@ func (c *Context) NewAccount(signer *Signer, version KernelVersion, index uint32
 	return &Account{acc: acc, ctx: c, signer: signer}, nil
 }
 
+// NewAccountAt is like NewAccount but pins the account's sender address to
+// `address` instead of counterfactually deriving it from (signer, version,
+// index). Use this to operate a pre-existing on-chain kernel account whose
+// address this SDK's CREATE2 no longer computes (e.g. a v3.1 wallet during a
+// v3.1 → v3.3 migration). The account is assumed already-deployed: no
+// factory init_code is emitted. The caller is trusted; no on-chain check
+// that `address` corresponds to this signer.
+func (c *Context) NewAccountAt(signer *Signer, version KernelVersion, index uint32, address [20]byte) (*Account, error) {
+	if c.ctx == nil {
+		return nil, fmt.Errorf("context is nil")
+	}
+	if signer == nil || signer.ptr == nil {
+		return nil, fmt.Errorf("signer is nil")
+	}
+
+	var acc *C.aa_account_t
+	status := C.aa_account_create_at(
+		c.ctx,
+		signer.ptr,
+		C.aa_kernel_version(version),
+		C.uint32_t(index),
+		(*C.uint8_t)(unsafe.Pointer(&address[0])),
+		&acc,
+	)
+	if status != C.AA_OK {
+		return nil, fmt.Errorf("aa_account_create_at failed: %s (code %d)", C.GoString(C.aa_get_last_error()), int(status))
+	}
+
+	return &Account{acc: acc, ctx: c, signer: signer}, nil
+}
+
 // NewAccount7702 creates a Kernel smart account using EIP-7702 delegation.
 //
 // The account's address is the signer's EOA address — there is no CREATE2, no

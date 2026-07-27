@@ -336,6 +336,40 @@ impl Context {
         })
     }
 
+    /// Same as [`new_account`], but pins the account's sender address to
+    /// `address` instead of counterfactually deriving it from
+    /// `(signer, version, index)`. Use this to operate a pre-existing
+    /// on-chain kernel account whose address this SDK's CREATE2 no longer
+    /// computes (e.g. a v3.1 wallet during a v3.1 → v3.3 migration).
+    ///
+    /// The account is assumed already-deployed: no factory init_code is
+    /// emitted on the first UserOp. The caller is trusted; the SDK does not
+    /// verify that `address` corresponds to this signer.
+    pub fn new_account_at<'a>(
+        &'a self,
+        signer: &'a Signer,
+        version: KernelVersion,
+        index: u32,
+        address: [u8; 20],
+    ) -> Result<Account<'a>> {
+        let mut acc: *mut ffi::aa_account_t = ptr::null_mut();
+        unsafe {
+            error::check(ffi::aa_account_create_at(
+                self.ptr,
+                signer.ptr,
+                version.to_c(),
+                index,
+                address.as_ptr(),
+                &mut acc,
+            ))?;
+        }
+        Ok(Account {
+            ptr: acc,
+            _ctx: self,
+            _signer: signer,
+        })
+    }
+
     /// Create a Kernel smart account using EIP-7702 delegation.
     ///
     /// The account's address is the signer's EOA address — there is no
