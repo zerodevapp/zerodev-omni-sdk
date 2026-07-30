@@ -1,6 +1,6 @@
 [package]
 name = "zerodev-aa"
-version = "0.0.1-alpha.1"
+version = "0.0.1-alpha.4"
 edition = "2021"
 rust-version = "1.70"
 description = "ERC-4337 smart account SDK for Rust — prebuilt native libraries, zero setup"
