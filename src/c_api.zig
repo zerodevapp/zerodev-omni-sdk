@@ -698,13 +698,14 @@ pub const AccountImpl = struct {
 /// standard flow. When non-NULL, it explicitly pins the account to an
 /// existing on-chain address; the SDK marks the account as `pinned` and
 /// skips factory init_code on the first UserOp (the account is assumed
-/// already-deployed). This is the migration path for legacy kernel wallets
-/// whose CREATE2 salt / implementation this SDK no longer computes.
+/// already-deployed).
 ///
-/// ponytail: no on-chain check that a pinned `address` actually belongs to
-/// this signer / kernel version — the caller is trusting themselves. Add a
-/// `verify` flag that re-derives and compares if we ever see foot-gun
-/// reports.
+/// This is the migration path for accounts whose original CREATE2 inputs
+/// (older kernel version, factory salt) this SDK cannot reproduce — post-
+/// upgrade the on-chain address is fixed but `(signer, version, index)`
+/// derives a different one. The caller is on the hook to pass the correct
+/// address; the SDK has nothing to cross-check against, since the original
+/// CREATE2 formula lives in the old SDK it replaced.
 pub export fn aa_account_create(
     ctx: ?*ContextImpl,
     signer: ?*SignerImpl,

@@ -252,11 +252,14 @@ void aa_signer_destroy(aa_signer_t *signer);
  * `address` may be NULL, in which case the sender address is derived
  * counterfactually via CREATE2 from `(owner, index, version)` — the standard
  * flow. When non-NULL, it pins the account to an existing on-chain address
- * (kernel-version upgrade paths, or operating a wallet created with an older
- * Kernel version whose CREATE2 salt this SDK no longer computes). The
- * account is then assumed already-deployed and no factory init_code is
- * emitted on the first UserOp. The caller is trusted; the SDK does not
- * verify that a pinned `address` actually corresponds to this signer. */
+ * and the SDK skips factory init_code on the first UserOp (the account is
+ * assumed already-deployed).
+ *
+ * This is the migration path for accounts whose original CREATE2 inputs
+ * (older kernel version, factory salt) this SDK cannot reproduce — post-
+ * upgrade the on-chain address is fixed but `(signer, version, index)`
+ * derives a different one. The caller is on the hook to pass the correct
+ * address; the SDK has nothing to cross-check against. */
 aa_status aa_account_create(aa_context_t *ctx,
                             aa_signer_t *signer,
                             aa_kernel_version version,
