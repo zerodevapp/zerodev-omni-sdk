@@ -679,12 +679,6 @@ pub const AccountImpl = struct {
     mode: AccountMode = .kernel_create2,
     /// Cached on-chain delegation status for EIP-7702 accounts. Null until first lookup.
     delegation_installed: ?bool = null,
-    /// Set by `aa_account_create_at`: caller pinned the sender address, so the
-    /// account is assumed already-deployed on-chain. Suppresses factory init_code
-    /// generation in both the high-level and low-level UserOp build paths — a
-    /// legacy v3.1 CREATE2 address would receive the wrong (v3.3) factory
-    /// calldata otherwise, and the account exists so no init is needed anyway.
-    pinned: bool = false,
 
     pub fn getValidator(self: *AccountImpl) Validator {
         return self.ecdsa.validator();
@@ -695,17 +689,22 @@ pub const AccountImpl = struct {
 ///
 /// `address` may be NULL, in which case the sender address is derived
 /// counterfactually via CREATE2 from `(owner_address, index, version)` — the
-/// standard flow. When non-NULL, it explicitly pins the account to an
-/// existing on-chain address; the SDK marks the account as `pinned` and
-/// skips factory init_code on the first UserOp (the account is assumed
-/// already-deployed).
+/// standard flow. When non-NULL, it explicitly pins the account's sender to
+/// that address.
 ///
 /// This is the migration path for accounts whose original CREATE2 inputs
 /// (older kernel version, factory salt) this SDK cannot reproduce — post-
-/// upgrade the on-chain address is fixed but `(signer, version, index)`
-/// derives a different one. The caller is on the hook to pass the correct
+/// upgrade the on-chain address is fixed but `(signer, version, index)` in
+/// the new SDK derives a different one. The caller passes the correct
 /// address; the SDK has nothing to cross-check against, since the original
-/// CREATE2 formula lives in the old SDK it replaced.
+/// CREATE2 formula lives in the old SDK this one replaced.
+///
+/// Pinning affects the sender only. Factory init_code is still emitted on
+/// the first UserOp exactly as it would be for a counterfactually-derived
+/// account (governed by nonce == 0). Callers pinning an already-deployed
+/// account whose EntryPoint nonce is still 0 (rare — funded but never
+/// used) should send the first op via the low-level API and drop the
+/// factory bytes themselves.
 pub export fn aa_account_create(
     ctx: ?*ContextImpl,
     signer: ?*SignerImpl,
@@ -724,7 +723,6 @@ pub export fn aa_account_create(
     };
 
     const owner_addr = Address.fromBytes(s.getSigner().getAddress());
-    const pinned = address != null;
     const sender_addr = if (address) |a|
         Address.fromBytes(a[0..20].*)
     else
@@ -742,7 +740,6 @@ pub export fn aa_account_create(
         .index = index,
         .owner_address = owner_addr,
         .sender_address = sender_addr,
-        .pinned = pinned,
     };
 
     out.?.* = impl;
@@ -943,7 +940,7 @@ pub export fn aa_userop_build(
     // build/hash/sign/to_json pipeline produce a valid on-chain first op.
     var init_code: []u8 = &[_]u8{};
     var eip7702_auth: ?core.Authorization = null;
-    if (acc.mode == .kernel_create2 and !acc.pinned) {
+    if (acc.mode == .kernel_create2) {
         const factory_data = create2.buildFactoryCalldata(
             a,
             acc.owner_address,
@@ -1327,10 +1324,7 @@ pub export fn aa_send_userop(
     var init_code: []u8 = &[_]u8{};
     var eip7702_auth: ?core.Authorization = null;
     if (acc.mode == .kernel_create2) {
-        // Pinned accounts are assumed already-deployed; nonce==0 for a
-        // never-touched pinned account would still be wrong to autoprovision
-        // (wrong factory version, or a legacy v3.1 impl).
-        if (nonce == 0 and !acc.pinned) {
+        if (nonce == 0) {
             const factory_data = create2.buildFactoryCalldata(a, acc.owner_address, @as(u256, acc.index), acc.kernel_version) catch {
                 setLastError("failed to build factory calldata", .{});
                 return .build_userop_failed;
@@ -1620,19 +1614,17 @@ test "aa_account_create: nil address → counterfactual CREATE2 derivation" {
     try testing.expectEqual(Status.ok, status);
     defer _ = aa_account_destroy(acc);
 
-    try testing.expect(!acc.?.pinned);
-
     // sender_address must equal the CREATE2-derived address for this signer.
     const expected = try create2.getKernelAddress(acc.?.owner_address, 0, .v3_3);
     try testing.expectEqualSlices(u8, &expected.bytes, &acc.?.sender_address.bytes);
 }
 
-test "aa_account_create: non-nil address → pinned, sender = passed bytes" {
+test "aa_account_create: non-nil address → sender = passed bytes" {
     const env = testCreateCtxAndSigner();
     defer _ = aa_context_destroy(env.ctx);
     defer aa_signer_destroy(env.signer);
 
-    // Legacy v3.1 address the caller wants to keep operating post-upgrade.
+    // Legacy address the caller wants to keep operating under a new kernel version.
     const pinned_bytes = [_]u8{
         0xde, 0xad, 0xbe, 0xef, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05,
         0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
@@ -1643,11 +1635,15 @@ test "aa_account_create: non-nil address → pinned, sender = passed bytes" {
     try testing.expectEqual(Status.ok, status);
     defer _ = aa_account_destroy(acc);
 
-    try testing.expect(acc.?.pinned);
     try testing.expectEqualSlices(u8, &pinned_bytes, &acc.?.sender_address.bytes);
 
     // aa_account_get_address must return the pinned address, not counterfactual.
     var addr_out: [20]u8 = undefined;
     try testing.expectEqual(Status.ok, aa_account_get_address(acc, &addr_out));
     try testing.expectEqualSlices(u8, &pinned_bytes, &addr_out);
+
+    // Counterfactual for this signer must differ — confirms we're actually
+    // using the pinned bytes and not silently ignoring them.
+    const counterfactual = try create2.getKernelAddress(acc.?.owner_address, 0, .v3_3);
+    try testing.expect(!std.mem.eql(u8, &counterfactual.bytes, &pinned_bytes));
 }

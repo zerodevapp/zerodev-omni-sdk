@@ -395,12 +395,14 @@ type Account struct {
 //
 // If `address` is nil, the sender address is derived counterfactually via
 // CREATE2 from (signer, version, index) — the standard flow. If non-nil, it
-// pins the account to that on-chain address (migration path for kernel
+// pins the account's sender to that address (migration path for kernel
 // version upgrades, or operating a legacy wallet whose CREATE2 salt this
-// SDK no longer computes). Pinned accounts are assumed already-deployed;
-// no factory init_code is emitted on the first UserOp. The caller is
-// trusted; the SDK does not verify that a pinned address corresponds to
-// the signer.
+// SDK no longer computes). Pinning affects the sender only; factory
+// init_code is still emitted on the first UserOp exactly as it would be
+// for a counterfactually-derived account (governed by the EntryPoint
+// nonce). Callers pinning an already-deployed account with EntryPoint
+// nonce 0 (rare — funded but never used) should drop the factory bytes
+// via the low-level UserOp API.
 func (c *Context) NewAccount(signer *Signer, version KernelVersion, index uint32, address *[20]byte) (*Account, error) {
 	if c.ctx == nil {
 		return nil, fmt.Errorf("context is nil")

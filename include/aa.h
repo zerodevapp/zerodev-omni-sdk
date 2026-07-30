@@ -251,15 +251,20 @@ void aa_signer_destroy(aa_signer_t *signer);
  *
  * `address` may be NULL, in which case the sender address is derived
  * counterfactually via CREATE2 from `(owner, index, version)` — the standard
- * flow. When non-NULL, it pins the account to an existing on-chain address
- * and the SDK skips factory init_code on the first UserOp (the account is
- * assumed already-deployed).
+ * flow. When non-NULL, it pins the account's sender to that address.
  *
  * This is the migration path for accounts whose original CREATE2 inputs
  * (older kernel version, factory salt) this SDK cannot reproduce — post-
- * upgrade the on-chain address is fixed but `(signer, version, index)`
- * derives a different one. The caller is on the hook to pass the correct
- * address; the SDK has nothing to cross-check against. */
+ * upgrade the on-chain address is fixed but `(signer, version, index)` in
+ * the new SDK derives a different one. The caller passes the correct
+ * address; the SDK has nothing to cross-check against.
+ *
+ * Pinning affects the sender only. Factory init_code is still emitted on
+ * the first UserOp exactly as it would be for a counterfactually-derived
+ * account (governed by the EntryPoint nonce). Callers pinning an
+ * already-deployed account whose EntryPoint nonce is still 0 (rare —
+ * funded but never used) should drop the factory bytes via the low-level
+ * UserOp API. */
 aa_status aa_account_create(aa_context_t *ctx,
                             aa_signer_t *signer,
                             aa_kernel_version version,

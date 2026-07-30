@@ -313,12 +313,15 @@ impl Context {
     ///
     /// `address` may be `None` — the sender address is then derived
     /// counterfactually via CREATE2 from `(signer, version, index)`, the
-    /// standard flow. When `Some`, the account is pinned to that on-chain
-    /// address (migration path for kernel-version upgrades, or operating a
-    /// pre-existing wallet whose CREATE2 salt this SDK no longer computes).
-    /// Pinned accounts are assumed already-deployed; no factory init_code
-    /// is emitted on the first UserOp. The caller is trusted — the SDK
-    /// does not verify that a pinned address corresponds to this signer.
+    /// standard flow. When `Some`, the account's sender is pinned to that
+    /// address (migration path for kernel-version upgrades, or operating
+    /// a pre-existing wallet whose CREATE2 salt this SDK no longer
+    /// computes). Pinning affects the sender only; factory init_code is
+    /// still emitted on the first UserOp exactly as it would be for a
+    /// counterfactually-derived account (governed by the EntryPoint
+    /// nonce). Callers pinning an already-deployed account with
+    /// EntryPoint nonce 0 (rare — funded but never used) should drop the
+    /// factory bytes via the low-level UserOp API.
     ///
     /// Both `self` (the Context) and `signer` must outlive the returned
     /// [`Account`] — enforced at compile time via the shared `'a` lifetime.

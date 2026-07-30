@@ -30,12 +30,15 @@ public final class Context: @unchecked Sendable {
     ///
     /// When `address` is `nil` (the default), the sender is derived
     /// counterfactually via CREATE2 from `(signer, version, index)`. When
-    /// supplied, the account is pinned to that on-chain address (migration
-    /// path for kernel-version upgrades, or operating a pre-existing wallet
-    /// whose CREATE2 salt this SDK no longer computes). Pinned accounts
-    /// are assumed already-deployed; no factory init_code is emitted on
-    /// the first UserOp. The caller is trusted; the SDK does not verify
-    /// that a pinned `address` corresponds to `signer`.
+    /// supplied, the account's sender is pinned to that address
+    /// (migration path for kernel-version upgrades, or operating a
+    /// pre-existing wallet whose CREATE2 salt this SDK no longer
+    /// computes). Pinning affects the sender only; factory init_code is
+    /// still emitted on the first UserOp exactly as it would be for a
+    /// counterfactually-derived account (governed by the EntryPoint
+    /// nonce). Callers pinning an already-deployed account with
+    /// EntryPoint nonce 0 (rare — funded but never used) should drop the
+    /// factory bytes via the low-level UserOp API.
     public func newAccount(
         signer: Signer,
         version: KernelVersion,
