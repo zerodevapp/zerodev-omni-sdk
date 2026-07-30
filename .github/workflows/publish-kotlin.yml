@@ -111,7 +111,12 @@ jobs:
           echo "=== Desktop native libraries ==="
           find "$RESOURCE_DIR" -type f -name "libzerodev_aa.*" | sort
 
+      # Android JNI build currently fails on aarch64-linux-android with
+      # `R_AARCH64_TLSLE_*` relocation errors when the Zig static lib
+      # (containing threadlocal state) is linked into a `.so`. Tracked
+      # separately; do NOT block the JVM release on it.
       - name: Cross-compile Android native libraries (JNI)
+        continue-on-error: true
         run: |
           RESOURCE_DIR=bindings/kotlin/src/main/resources
           JNI_SRC=bindings/kotlin/jni/zerodev_aa_jni.c
@@ -188,17 +193,23 @@ jobs:
           cd bindings/kotlin
           ./gradlew :publishToCentralPortal
 
+      # Android artefacts are gated behind the same fix as the Android JNI
+      # step above; `continue-on-error` here so the JVM path (already
+      # published above) doesn't hold up SBOM / tag steps.
       - name: Build Android AAR
+        continue-on-error: true
         run: |
           cd bindings/kotlin
           ./gradlew :android:assembleRelease
 
       - name: Attest build provenance for Android AAR (audit F-15)
+        continue-on-error: true
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32  # v4.1.0
         with:
           subject-path: 'bindings/kotlin/android/build/outputs/aar/*.aar'
 
       - name: Publish Android AAR to Maven Central
+        continue-on-error: true
         env:
           OSSRH_USERNAME: ${{ secrets.OSSRH_USERNAME }}
           OSSRH_PASSWORD: ${{ secrets.OSSRH_PASSWORD }}

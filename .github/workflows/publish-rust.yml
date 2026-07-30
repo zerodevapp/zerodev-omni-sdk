@@ -103,17 +103,17 @@ jobs:
 
       - name: Compute SHA-256 manifest
         id: hashes
+        # ponytail: macOS runners ship bash 3.2 (no associative arrays); pair
+        # each asset_tag with its output key in one string, split with `read`.
         run: |
-          declare -A keys=(
-            [aarch64-macos]=aarch64_macos
-            [x86_64-macos]=x86_64_macos
-            [x86_64-linux]=x86_64_linux_gnu
-            [aarch64-linux]=aarch64_linux_gnu
-          )
-          for asset_tag in aarch64-macos x86_64-macos x86_64-linux aarch64-linux; do
+          for pair in \
+            "aarch64-macos aarch64_macos" \
+            "x86_64-macos x86_64_macos" \
+            "x86_64-linux x86_64_linux_gnu" \
+            "aarch64-linux aarch64_linux_gnu"; do
+            read -r asset_tag key <<< "$pair"
             file="dist/zerodev-aa-native-${asset_tag}.tar.gz"
             hash=$(shasum -a 256 "$file" | awk '{print $1}')
-            key="${keys[$asset_tag]}"
             echo "${key}=${hash}" >> "$GITHUB_OUTPUT"
             echo "${asset_tag}: ${hash}"
           done

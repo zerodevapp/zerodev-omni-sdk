@@ -14,10 +14,12 @@ jobs:
     permissions:
       # Audit F-15: SLSA build-provenance attestation needs an OIDC token
       # exchanged for a Sigstore signing cert, plus write access to push the
-      # attestation to GitHub's attestation store.
+      # attestation to GitHub's attestation store. `contents: write` is
+      # needed for the `git push origin <tag>` in the final "Tag release"
+      # step — read is not sufficient.
       id-token: write
       attestations: write
-      contents: read
+      contents: write
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
