@@ -24,13 +24,9 @@ jobs:
     uses: ./.github/workflows/publish-go.yml
     secrets: inherit
 
-  # Native libs release — uploaded as a GitHub Release asset that Rust's build.rs
-  # downloads at compile time. Tag-only push, no main commit.
-  publish-native-libs:
-    uses: ./.github/workflows/publish-native-libs.yml
-    secrets: inherit
-
-  # Rust to crates.io. Tag-only push; native libs job runs inline.
+  # Rust to crates.io. Tag-only push; native libs job runs inline and produces
+  # its own immutable `native-v${BASE}.${BUILD}` release (SHA-pinned via the
+  # F-12 manifest that ships in the published crate).
   publish-rust:
     uses: ./.github/workflows/publish-rust.yml
     secrets: inherit
