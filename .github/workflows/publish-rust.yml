@@ -39,10 +39,13 @@ jobs:
 
           # Both rust-v* and native-v* share the same BUILD counter so the
           # crate version and the native release version always line up.
+          # Extract just the trailing BUILD number and sort numerically —
+          # the previous `sort -t. -k5 -n` looked at an empty field (tags
+          # only have 4 dot-separated parts) which reduced to alphabetical
+          # order and put native-v ahead of rust-v.
           git fetch --tags --quiet
-          LATEST=$(git tag -l "rust-v${BASE}.*" "native-v${BASE}.*" | sort -t. -k5 -n | tail -1)
-          if [ -n "$LATEST" ]; then
-            BUILD=$(echo "$LATEST" | grep -o '[0-9]*$')
+          BUILD=$(git tag -l "rust-v${BASE}.*" "native-v${BASE}.*" | grep -oE '[0-9]+$' | sort -n | tail -1)
+          if [ -n "$BUILD" ]; then
             BUILD=$((BUILD + 1))
           else
             BUILD=1

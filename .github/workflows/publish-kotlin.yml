@@ -29,9 +29,10 @@ jobs:
           BASE=$(cat VERSION | tr -d '[:space:]')
 
           git fetch --tags
-          LATEST=$(git tag -l "kotlin-v${BASE}.*" | sort -t. -k5 -n | tail -1)
-          if [ -n "$LATEST" ]; then
-            BUILD=$(echo "$LATEST" | grep -o '[0-9]*$')
+          # Extract trailing BUILD number and sort numerically; the old
+          # `sort -t. -k5 -n` fell back to alphabetical (would break at BUILD >= 10).
+          BUILD=$(git tag -l "kotlin-v${BASE}.*" | grep -oE '[0-9]+$' | sort -n | tail -1)
+          if [ -n "$BUILD" ]; then
             BUILD=$((BUILD + 1))
           else
             BUILD=1
