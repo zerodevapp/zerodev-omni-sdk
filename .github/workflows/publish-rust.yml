@@ -28,7 +28,7 @@ jobs:
       hash_x86_64_linux_gnu: ${{ steps.hashes.outputs.x86_64_linux_gnu }}
       hash_aarch64_linux_gnu: ${{ steps.hashes.outputs.aarch64_linux_gnu }}
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v5.0.0
         with:
           fetch-depth: 0  # need full tag history for version bump
 
@@ -144,7 +144,7 @@ jobs:
             --notes "Prebuilt static libraries for Rust binding (immutable; SHA-256 pinned in native-libs.sha256)."
 
       - name: Attest build provenance (audit F-15)
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32  # v4.1.0
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373  # v4.1.1
         with:
           subject-path: 'dist/*.tar.gz'
 
@@ -168,7 +168,7 @@ jobs:
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v5.0.0
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable (pinned)
