@@ -54,6 +54,24 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // ABI encoder — standalone (std only), shared by the validators to build
+    // enable-data and signatures.
+    const abi_mod = b.createModule(.{
+        .root_source_file = b.path("src/core/abi.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // Plugin lifecycle calldata (install validator / change root validator).
+    const plugin_mod = b.createModule(.{
+        .root_source_file = b.path("src/core/plugin.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "abi", .module = abi_mod },
+        },
+    });
+
     const validators_mod = b.createModule(.{
         .root_source_file = b.path("src/validators/root.zig"),
         .target = target,
@@ -62,6 +80,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zabi", .module = zabi_mod },
             .{ .name = "primitives", .module = primitives_mod },
             .{ .name = "signers", .module = signers_mod },
+            .{ .name = "abi", .module = abi_mod },
         },
     });
 
@@ -87,6 +106,8 @@ pub fn build(b: *std.Build) void {
     c_api_mod.addImport("primitives", primitives_mod);
     c_api_mod.addImport("transport", transport_mod);
     c_api_mod.addImport("signers", signers_mod);
+    c_api_mod.addImport("abi", abi_mod);
+    c_api_mod.addImport("plugin", plugin_mod);
 
     // Static library
     const static_lib = b.addLibrary(.{
@@ -113,6 +134,8 @@ pub fn build(b: *std.Build) void {
         dynamic_lib.root_module.addImport("primitives", primitives_mod);
         dynamic_lib.root_module.addImport("transport", transport_mod);
         dynamic_lib.root_module.addImport("signers", signers_mod);
+        dynamic_lib.root_module.addImport("abi", abi_mod);
+        dynamic_lib.root_module.addImport("plugin", plugin_mod);
         b.installArtifact(dynamic_lib);
     }
 
@@ -158,11 +181,54 @@ pub fn build(b: *std.Build) void {
         .root_module = c_api_mod,
     });
     const run_c_api_tests = b.addRunArtifact(c_api_tests);
+    // ABI encoder tests live in a separate compilation for the same reason as
+    // transport: the module is reached through a named import, so its tests
+    // don't surface in the root compilation.
+    const abi_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/core/abi.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_abi_tests = b.addRunArtifact(abi_tests);
+
+    const plugin_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/core/plugin.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "abi", .module = abi_mod },
+            },
+        }),
+    });
+    const run_plugin_tests = b.addRunArtifact(plugin_tests);
+
+    // Validator tests (ECDSA, WebAuthn) — reached through named imports, so a
+    // dedicated compilation like transport's.
+    const validators_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/validators/root.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zabi", .module = zabi_mod },
+                .{ .name = "primitives", .module = primitives_mod },
+                .{ .name = "signers", .module = signers_mod },
+                .{ .name = "abi", .module = abi_mod },
+            },
+        }),
+    });
+    const run_validators_tests = b.addRunArtifact(validators_tests);
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_tests.step);
     test_step.dependOn(&run_transport_tests.step);
     test_step.dependOn(&run_c_api_tests.step);
+    test_step.dependOn(&run_abi_tests.step);
+    test_step.dependOn(&run_plugin_tests.step);
+    test_step.dependOn(&run_validators_tests.step);
 
     // ---- E2E tests (require local Anvil + Alto) ----
 

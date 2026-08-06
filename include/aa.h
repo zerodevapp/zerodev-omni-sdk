@@ -287,6 +287,42 @@ aa_status aa_account_get_address(aa_account_t *account,
 
 aa_status aa_account_destroy(aa_account_t *account);
 
+/* ---- Passkey (WebAuthn) owned account ---- */
+
+/* The assertion the host fills after running the passkey ceremony. Its buffers
+ * need only remain valid until the sign callback returns. */
+typedef struct {
+    const uint8_t *authenticator_data;
+    size_t authenticator_data_len;
+    const char *client_data_json;
+    size_t client_data_json_len;
+    const uint8_t *der_signature; /* ASN.1 DER P-256 signature */
+    size_t der_signature_len;
+} aa_webauthn_assertion;
+
+/* Host callback: run Face ID / Touch ID with `challenge` (the UserOp hash) and
+ * fill `out`. Return 0 on success, non-zero to abort signing. */
+typedef int (*aa_webauthn_sign_fn)(void *user_ctx,
+                                   const uint8_t challenge[32],
+                                   aa_webauthn_assertion *out);
+
+/* Create a passkey-owned account. The credential is (pub_x, pub_y,
+ * authenticator_id_hash); contract_version selects the WebAuthn validator
+ * (0 = v0.0.1, 1 = v0.0.2, 2 = v0.0.3). The counterfactual address matches
+ * @zerodev/sdk for the same inputs. Gas estimation uses a stub signature, so
+ * the ceremony runs once, for the final signature. */
+aa_status aa_account_create_passkey(aa_context_t *ctx,
+                                    aa_webauthn_sign_fn sign_fn,
+                                    void *user_ctx,
+                                    const uint8_t pub_x[32],
+                                    const uint8_t pub_y[32],
+                                    const uint8_t authenticator_id_hash[32],
+                                    int contract_version,
+                                    uint64_t chain_id,
+                                    aa_kernel_version version,
+                                    uint32_t index,
+                                    aa_account_t **out);
+
 /* ---- High-level: full pipeline ---- */
 
 aa_status aa_send_userop(aa_account_t *account,
@@ -347,6 +383,72 @@ aa_status aa_wait_for_user_operation_receipt(
     char **json_out,
     size_t *json_len_out);
 
+/* ---- Validator enable-data and plugin lifecycle calldata ---- */
+
+/* These build the enable-data for a validator and the calldata to install it as
+ * a secondary validator (co-ownership / guardians) or to change the account's
+ * root (sudo) validator (owner rotation). The account signs the resulting call
+ * with its current sudo validator, so send it as a normal UserOp targeting the
+ * account itself. Every heap buffer returned here must be freed with aa_free. */
+
+/* Passkey (WebAuthn) enable-data: abi.encode((uint256 x, uint256 y),
+ * bytes32 authenticatorIdHash). Writes exactly 96 bytes into out. */
+aa_status aa_encode_webauthn_enable_data(const uint8_t pub_x[32],
+                                         const uint8_t pub_y[32],
+                                         const uint8_t authenticator_id_hash[32],
+                                         uint8_t *out);
+
+/* Weighted-ECDSA (guardians) enable-data: abi.encode(address[] guardians,
+ * uint24[] weights, uint24 threshold, uint48 delay). guardians is count*20
+ * bytes; weights has count entries. *out is heap-allocated. */
+aa_status aa_encode_weighted_enable_data(const uint8_t *guardians,
+                                         const uint32_t *weights,
+                                         size_t count,
+                                         uint32_t threshold,
+                                         uint64_t delay,
+                                         uint8_t **out,
+                                         size_t *out_len);
+
+/* Calldata to install `module` (20-byte validator address) as a secondary
+ * validator with the given enable-data. *out is heap-allocated. */
+aa_status aa_encode_install_validator(const uint8_t module[20],
+                                      const uint8_t *validator_data,
+                                      size_t validator_data_len,
+                                      uint8_t **out,
+                                      size_t *out_len);
+
+/* Calldata to make `module` (20-byte validator address) the account's root
+ * (sudo) validator with the given enable-data. *out is heap-allocated. */
+aa_status aa_encode_change_root_validator(const uint8_t module[20],
+                                          const uint8_t *validator_data,
+                                          size_t validator_data_len,
+                                          uint8_t **out,
+                                          size_t *out_len);
+
+/* Keccak-256 of `data` (len bytes) into out[0..32]. For host-side derivations
+ * such as a passkey's authenticatorIdHash = keccak256(credentialId). */
+aa_status aa_keccak256(const uint8_t *data, size_t len, uint8_t out[32]);
+
+/* The value guardians approve for a recovery, into out[0..32]:
+ * keccak256(abi.encode(sender, callData, nonce)). nonce_be is a 32-byte
+ * big-endian uint256. Both guardian kinds approve this same hash. */
+aa_status aa_recovery_hash(const uint8_t sender[20],
+                           const uint8_t *call_data, size_t call_data_len,
+                           const uint8_t nonce_be[32],
+                           uint8_t out[32]);
+
+/* Calldata for approve(hash, kernel) on the weighted validator, for a smart
+ * account guardian to record its approval on chain. *out is heap-allocated. */
+aa_status aa_encode_approve(const uint8_t hash[32], const uint8_t kernel[20],
+                            uint8_t **out, size_t *out_len);
+
+/* The account's next nonce for a userop validated by `validator` (a secondary
+ * validator), into out[0..32] big-endian. This is the nonce the recovery hash
+ * binds to. Reads it from the on-chain EntryPoint. */
+aa_status aa_account_nonce_for_validator(aa_account_t *account,
+                                         const uint8_t validator[20],
+                                         uint8_t out[32]);
+
 /* ---- Memory management ---- */
 
 /** Allocate `size` bytes via libc `malloc`. Returns NULL on failure or
@@ -363,6 +465,10 @@ void aa_free(void *ptr);
 /* ---- Error details ---- */
 
 const char *aa_get_last_error(void);
+
+/** The server's last JSON-RPC error, or "". aa_get_last_error is the SDK's
+ * summary; this is the reason the server sent. */
+const char *aa_get_last_rpc_error(void);
 
 #ifdef __cplusplus
 }

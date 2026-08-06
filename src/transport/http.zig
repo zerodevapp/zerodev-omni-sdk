@@ -3,8 +3,17 @@
 const std = @import("std");
 const http = std.http;
 
-/// Perform an HTTP POST and return the decompressed response body.
+/// HTTP POST returning the decompressed body. The first try uses the system
+/// trust store; if that has nothing to scan (iOS, Android) TLS fails and we
+/// retry with the embedded CA bundle.
 pub fn post(allocator: std.mem.Allocator, url: []const u8, payload: []const u8) ![]u8 {
+    return postOnce(allocator, url, payload, false) catch |err| switch (err) {
+        error.TlsInitializationFailed, error.CertificateBundleLoadFailure => try postOnce(allocator, url, payload, true),
+        else => err,
+    };
+}
+
+fn postOnce(allocator: std.mem.Allocator, url: []const u8, payload: []const u8, use_embedded_ca: bool) ![]u8 {
     const uri = try std.Uri.parse(url);
 
     // Zig 0.16 requires an `Io` instance to be passed to the HTTP client for
@@ -13,6 +22,9 @@ pub fn post(allocator: std.mem.Allocator, url: []const u8, payload: []const u8) 
 
     var client = http.Client{ .allocator = allocator, .io = io };
     defer client.deinit();
+
+    // System trust store was unavailable, so use the embedded roots.
+    if (use_embedded_ca) try @import("ca_bundle.zig").install(&client, allocator, io);
 
     var req = try client.request(.POST, uri, .{
         .extra_headers = &.{

@@ -96,6 +96,111 @@ pub fn buildFactoryCalldata(
     return buf;
 }
 
+/// Round a byte length up to the next 32-byte boundary.
+fn paddedLen(len: usize) usize {
+    return (len + 31) / 32 * 32;
+}
+
+fn writeWord(dest: *[32]u8, val: u256) void {
+    dest.* = @bitCast(@byteSwap(val));
+}
+
+/// Encode `initialize(bytes21,address,bytes,bytes,bytes[])` for any root
+/// validator and validator-data length (the ECDSA case fixes validatorData at
+/// 20 bytes; a WebAuthn validator uses 96). No hook, no initConfig. Caller owns
+/// the result.
+pub fn computeInitializeCalldataGeneric(
+    allocator: std.mem.Allocator,
+    root_validator: Address,
+    validator_data: []const u8,
+) ![]u8 {
+    const vpad = paddedLen(validator_data.len);
+    const total = 4 + 32 * 5 + (32 + vpad) + 32 + 32;
+    const buf = try allocator.alloc(u8, total);
+    @memset(buf, 0);
+
+    const selector = keccak.functionSelector("initialize(bytes21,address,bytes,bytes,bytes[])");
+    @memcpy(buf[0..4], &selector);
+
+    // word 0: rootValidator (bytes21 = 0x01 ++ address), left-aligned.
+    buf[4] = 0x01;
+    @memcpy(buf[5..25], &root_validator.bytes);
+    // word 1: hook = zero address (already zero).
+    // words 2-4: offsets to validatorData, hookData, initConfig (args-relative).
+    writeWord(buf[4 + 64 ..][0..32], 0xa0);
+    const hook_data_off: u256 = 0xa0 + 32 + vpad;
+    writeWord(buf[4 + 96 ..][0..32], hook_data_off);
+    writeWord(buf[4 + 128 ..][0..32], hook_data_off + 32);
+    // validatorData: length then data (hookData and initConfig stay zero-length).
+    writeWord(buf[4 + 160 ..][0..32], validator_data.len);
+    @memcpy(buf[4 + 192 .. 4 + 192 + validator_data.len], validator_data);
+
+    return buf;
+}
+
+/// Counterfactual CREATE2 address for a Kernel v3 account with an arbitrary root
+/// validator and its enable-data (e.g. a WebAuthn passkey validator).
+pub fn getKernelAddressGeneric(
+    allocator: std.mem.Allocator,
+    root_validator: Address,
+    validator_data: []const u8,
+    index: u256,
+    kernel_version: zerodev.KernelVersion,
+) !Address {
+    const impl_addr = try Address.fromHex(kernel_version.implementationAddress());
+    const factory_addr = try Address.fromHex(kernel_version.factoryAddress());
+    const bytecode_hash = initCodeHashERC1967(impl_addr);
+
+    const init_data = try computeInitializeCalldataGeneric(allocator, root_validator, validator_data);
+    defer allocator.free(init_data);
+
+    const salt_input = try allocator.alloc(u8, init_data.len + 32);
+    defer allocator.free(salt_input);
+    @memcpy(salt_input[0..init_data.len], init_data);
+    const index_be: [32]u8 = @bitCast(@byteSwap(index));
+    @memcpy(salt_input[init_data.len..], &index_be);
+    const salt = keccak.hash(salt_input);
+
+    var create2_input: [85]u8 = undefined;
+    create2_input[0] = 0xff;
+    @memcpy(create2_input[1..21], &factory_addr.bytes);
+    @memcpy(create2_input[21..53], &salt.bytes);
+    @memcpy(create2_input[53..85], &bytecode_hash.bytes);
+
+    const create2_hash = keccak.hash(&create2_input);
+    return Address.fromBytes(create2_hash.bytes[12..32].*);
+}
+
+/// MetaFactory deployWithFactory(address,bytes,bytes32) calldata for an account
+/// with an arbitrary root validator and its enable-data. Mirrors
+/// buildFactoryCalldata but with variable-length init data. Caller owns result.
+pub fn buildFactoryCalldataGeneric(
+    allocator: std.mem.Allocator,
+    root_validator: Address,
+    validator_data: []const u8,
+    index: u256,
+    kernel_version: zerodev.KernelVersion,
+) ![]u8 {
+    const factory_addr = try Address.fromHex(kernel_version.factoryAddress());
+    const init_data = try computeInitializeCalldataGeneric(allocator, root_validator, validator_data);
+    defer allocator.free(init_data);
+
+    const total = 4 + 32 * 4 + paddedLen(init_data.len);
+    const buf = try allocator.alloc(u8, total);
+    @memset(buf, 0);
+
+    const selector = keccak.functionSelector("deployWithFactory(address,bytes,bytes32)");
+    @memcpy(buf[0..4], &selector);
+    @memcpy(buf[16..36], &factory_addr.bytes); // factory in word 0
+    writeWord(buf[4 + 32 ..][0..32], 0x60); // offset to createData
+    const salt_be: [32]u8 = @bitCast(@byteSwap(index));
+    @memcpy(buf[4 + 64 .. 4 + 96], &salt_be); // salt (word 2)
+    writeWord(buf[4 + 96 ..][0..32], init_data.len); // createData length
+    @memcpy(buf[4 + 128 .. 4 + 128 + init_data.len], init_data);
+
+    return buf;
+}
+
 /// Compute the counterfactual CREATE2 address for a Kernel v3 smart account.
 pub fn getKernelAddress(owner: Address, index: u256, kernel_version: zerodev.KernelVersion) !Address {
     const impl_addr = try Address.fromHex(kernel_version.implementationAddress());
@@ -235,6 +340,44 @@ test "getKernelAddress matches SDK — different owner, v3.3, index=0" {
     const addr = try getKernelAddress(owner, 0, .v3_3);
     const expected = try Address.fromHex("0xCF0c37F1390A0dc25615EE05bfcab32aAd704D02");
     try std.testing.expectEqualSlices(u8, &expected.bytes, &addr.bytes);
+}
+
+test "generic initialize calldata reproduces the ECDSA case" {
+    const allocator = std.testing.allocator;
+    const owner = try Address.fromHex("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
+    const ecdsa_validator = try Address.fromHex(zerodev.ECDSA_VALIDATOR);
+    const generic = try computeInitializeCalldataGeneric(allocator, ecdsa_validator, &owner.bytes);
+    defer allocator.free(generic);
+    const fixed = computeInitializeCalldata(owner, ecdsa_validator);
+    try std.testing.expectEqualSlices(u8, &fixed, generic);
+}
+
+test "getKernelAddressGeneric matches SDK — WebAuthn passkey, v3.3, index=0" {
+    const allocator = std.testing.allocator;
+    // WebAuthn v0.0.2 validator + enable-data for pubX=0x1111, pubY=0x2222,
+    // authenticatorIdHash=0x33..33 — the same inputs the @zerodev/sdk oracle used.
+    const webauthn_validator = try Address.fromHex("0xbA45a2BFb8De3D24cA9D7F1B551E14dFF5d690Fd");
+    var enable_data: [96]u8 = [_]u8{0} ** 96;
+    enable_data[30] = 0x11;
+    enable_data[31] = 0x11;
+    enable_data[62] = 0x22;
+    enable_data[63] = 0x22;
+    @memset(enable_data[64..96], 0x33);
+
+    const addr = try getKernelAddressGeneric(allocator, webauthn_validator, &enable_data, 0, .v3_3);
+    const expected = try Address.fromHex("0x2C52f4914Bd7F3FCB9570eC8d952068C7356CD5E");
+    try std.testing.expectEqualSlices(u8, &expected.bytes, &addr.bytes);
+}
+
+test "buildFactoryCalldataGeneric reproduces the ECDSA case" {
+    const allocator = std.testing.allocator;
+    const owner = try Address.fromHex("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
+    const ecdsa_validator = try Address.fromHex(zerodev.ECDSA_VALIDATOR);
+    const generic = try buildFactoryCalldataGeneric(allocator, ecdsa_validator, &owner.bytes, 0, .v3_3);
+    defer allocator.free(generic);
+    const fixed = try buildFactoryCalldata(allocator, owner, 0, .v3_3);
+    defer allocator.free(fixed);
+    try std.testing.expectEqualSlices(u8, fixed, generic);
 }
 
 test "buildFactoryCalldata output is 452 bytes" {

@@ -6,6 +6,66 @@ const http_post = @import("http.zig").post;
 
 const Address = primitives.Address;
 
+// The last JSON-RPC error on this thread, so the C API can report the server's
+// own message instead of a bare "JsonRpcError". Overwritten on every error.
+pub const last_rpc_error_max = 512;
+threadlocal var last_rpc_error_buf: [last_rpc_error_max]u8 = undefined;
+threadlocal var last_rpc_error_len: usize = 0;
+
+/// The last JSON-RPC error on this thread, or "" if none.
+pub fn lastRpcError() []const u8 {
+    return last_rpc_error_buf[0..last_rpc_error_len];
+}
+
+// The useful detail is usually in `data` (a revert reason, a paymaster
+// rejection), not `message`. Odd shapes are kept as raw JSON so nothing is lost.
+fn recordRpcError(allocator: std.mem.Allocator, err_val: std.json.Value) void {
+    if (err_val == .object) {
+        const obj = err_val.object;
+        const has_fields = obj.contains("code") or obj.contains("message");
+        if (has_fields) {
+            const code: i64 = if (obj.get("code")) |c|
+                (if (c == .integer) c.integer else 0)
+            else 0;
+            const message: []const u8 = if (obj.get("message")) |m|
+                (if (m == .string) m.string else "")
+            else "";
+            const data: []const u8 = if (obj.get("data")) |d|
+                (if (d == .string) d.string else "")
+            else "";
+            // Formats straight into the buffer; on overflow, clear it.
+            const written = if (data.len > 0)
+                std.fmt.bufPrint(&last_rpc_error_buf, "code {d}: {s} ({s})", .{ code, message, data })
+            else
+                std.fmt.bufPrint(&last_rpc_error_buf, "code {d}: {s}", .{ code, message });
+            if (written) |s| {
+                last_rpc_error_len = s.len;
+            } else |_| {
+                last_rpc_error_len = 0;
+            }
+            return;
+        }
+    }
+    if (err_val == .string) {
+        setLastRpcError(err_val.string);
+        return;
+    }
+    // Unrecognised shape: keep the raw JSON so the detail survives.
+    const raw = std.json.Stringify.valueAlloc(allocator, err_val, .{}) catch {
+        last_rpc_error_len = 0;
+        return;
+    };
+    defer allocator.free(raw);
+    setLastRpcError(raw);
+}
+
+/// Copy `msg` into the thread-local buffer, truncating to fit.
+fn setLastRpcError(msg: []const u8) void {
+    const n = @min(msg.len, last_rpc_error_buf.len);
+    @memcpy(last_rpc_error_buf[0..n], msg[0..n]);
+    last_rpc_error_len = n;
+}
+
 /// Parse a hex string (with optional 0x prefix) into an integer of any width.
 pub fn parseHex(comptime T: type, hex: []const u8) !T {
     const stripped = if (hex.len >= 2 and hex[0] == '0' and (hex[1] == 'x' or hex[1] == 'X'))
@@ -158,6 +218,7 @@ pub const Client = struct {
                         }
                     }
                 }
+                recordRpcError(self.allocator, err_val);
                 return error.JsonRpcError;
             }
         }

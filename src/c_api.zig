@@ -7,6 +7,11 @@ const std = @import("std");
 const builtin = @import("builtin");
 const primitives = @import("primitives");
 
+// Trap on panic instead of dumping a stack trace. The default handler walks
+// the loaded images to symbolicate, pulling in dyld lookups the iOS simulator
+// runtime does not provide, so the framework can load there.
+pub const panic = std.debug.simple_panic;
+
 const Address = primitives.Address;
 const Hash = primitives.Hash;
 const keccak = @import("core/keccak.zig");
@@ -24,6 +29,10 @@ const transport = @import("transport");
 const Client = transport.Client;
 const EcdsaValidator = @import("validators/ecdsa.zig").EcdsaValidator;
 const Validator = @import("validators/Validator.zig").Validator;
+const SignError = @import("validators/Validator.zig").SignError;
+const webauthn = @import("validators/webauthn.zig");
+const weighted = @import("validators/weighted.zig");
+const plugin = @import("plugin");
 const signers = @import("signers");
 const Signer = signers.Signer;
 const LocalSigner = signers.local.LocalSigner;
@@ -109,6 +118,7 @@ pub const Status = enum(c_int) {
     receipt_timeout = 22,
     receipt_failed = 23,
     invalid_signer = 24,
+    encode_failed = 25,
 };
 
 // ---- Middleware types ----
@@ -281,8 +291,11 @@ pub export fn aa_gas_zerodev(
 
     const allocator = c.allocator;
 
-    // Resolve RPC URL
-    const rpc_url: []const u8 = if (c.bundler_url.len > 0)
+    // Gas price is a read, so use the node RPC (rpc_url), not the bundler.
+    // Fall back to the bundler URL for callers that predate the rpc_url split.
+    const rpc_url: []const u8 = if (c.rpc_url.len > 0)
+        c.rpc_url
+    else if (c.bundler_url.len > 0)
         c.bundler_url
     else blk: {
         const url = core.buildRpcUrl(allocator, c.project_id, c.chain_id) catch {
@@ -291,7 +304,7 @@ pub export fn aa_gas_zerodev(
         };
         break :blk url;
     };
-    const url_allocated = c.bundler_url.len == 0;
+    const url_allocated = c.rpc_url.len == 0 and c.bundler_url.len == 0;
     defer if (url_allocated) allocator.free(@constCast(rpc_url));
 
     var rpc = Client.init(allocator, rpc_url) catch {
@@ -668,10 +681,62 @@ pub const AA_KERNEL_V3_3: c_int = 0;
 /// for EIP-7702 accounts.
 pub const KERNEL_V3_3_DELEGATION_TARGET: [20]u8 = core.KERNEL_V3_3_DELEGATION_TARGET;
 
+/// C-visible WebAuthn assertion the host fills after running the passkey
+/// ceremony. Its buffers need only stay valid until the sign callback returns.
+pub const CWebAuthnAssertion = extern struct {
+    authenticator_data: ?[*]const u8,
+    authenticator_data_len: usize,
+    client_data_json: ?[*]const u8,
+    client_data_json_len: usize,
+    der_signature: ?[*]const u8,
+    der_signature_len: usize,
+};
+
+/// Host callback that runs the Face ID / Touch ID ceremony with the challenge
+/// (the UserOp hash) and fills the assertion. Returns 0 on success.
+pub const WebAuthnSignFn = *const fn (?*anyopaque, *const [32]u8, *CWebAuthnAssertion) callconv(.c) c_int;
+
+/// Bridges the host's passkey callback to the WebAuthn validator's signer. Held
+/// at a stable address inside AccountImpl so the validator can point at it.
+pub const PasskeyBridge = struct {
+    sign_fn: WebAuthnSignFn,
+    user_ctx: ?*anyopaque,
+
+    pub fn webAuthnSigner(self: *PasskeyBridge) webauthn.WebAuthnSigner {
+        return .{ .ptr = @ptrCast(self), .signFn = signImpl };
+    }
+
+    fn signImpl(ptr: *anyopaque, allocator: std.mem.Allocator, challenge: [32]u8) SignError!webauthn.Assertion {
+        const self: *PasskeyBridge = @ptrCast(@alignCast(ptr));
+        var out: CWebAuthnAssertion = undefined;
+        if (self.sign_fn(self.user_ctx, &challenge, &out) != 0) return SignError.SigningFailed;
+        // Copy the host's buffers into the arena — they may only live for the call.
+        const ad = out.authenticator_data orelse return SignError.SigningFailed;
+        const cd = out.client_data_json orelse return SignError.SigningFailed;
+        const der = out.der_signature orelse return SignError.SigningFailed;
+        return .{
+            .authenticator_data = try allocator.dupe(u8, ad[0..out.authenticator_data_len]),
+            .client_data_json = try allocator.dupe(u8, cd[0..out.client_data_json_len]),
+            .der_signature = try allocator.dupe(u8, der[0..out.der_signature_len]),
+        };
+    }
+};
+
+/// An account's root validator: a local ECDSA owner, or a passkey (WebAuthn)
+/// owner driven by a host callback.
+pub const AccountValidator = union(enum) {
+    ecdsa: EcdsaValidator,
+    webauthn: struct {
+        bridge: PasskeyBridge,
+        validator: webauthn.WebAuthnValidator,
+    },
+};
+
 pub const AccountImpl = struct {
     context: *ContextImpl,
-    signer: *SignerImpl,
-    ecdsa: EcdsaValidator,
+    /// The local signer, for ECDSA / EIP-7702 accounts. Null for passkey owners.
+    signer: ?*SignerImpl,
+    validator_kind: AccountValidator,
     kernel_version: KernelVersion,
     index: u32,
     owner_address: Address,
@@ -681,9 +746,39 @@ pub const AccountImpl = struct {
     delegation_installed: ?bool = null,
 
     pub fn getValidator(self: *AccountImpl) Validator {
-        return self.ecdsa.validator();
+        return switch (self.validator_kind) {
+            .ecdsa => |*e| e.validator(),
+            .webauthn => |*w| w.validator.validator(),
+        };
+    }
+
+    /// Whether signing needs a user gesture — then gas estimation uses the stub
+    /// so the user is prompted only once, for the final signature.
+    pub fn interactiveSigning(self: *AccountImpl) bool {
+        return self.validator_kind == .webauthn;
+    }
+
+    /// The MetaFactory deploy calldata for this account's first UserOp.
+    pub fn buildFactoryData(self: *AccountImpl, allocator: std.mem.Allocator) ![]u8 {
+        return switch (self.validator_kind) {
+            .ecdsa => create2.buildFactoryCalldata(allocator, self.owner_address, @as(u256, self.index), self.kernel_version),
+            .webauthn => |*w| create2.buildFactoryCalldataGeneric(
+                allocator,
+                Address.fromBytes(w.validator.addr),
+                &w.validator.enable_data,
+                @as(u256, self.index),
+                self.kernel_version,
+            ),
+        };
     }
 };
+
+/// The signature to use for gas estimation: the borrowed stub (duped into the
+/// arena) for interactive signers, or a real signature for ECDSA.
+fn estimationSignature(allocator: std.mem.Allocator, val: Validator, interactive: bool, hash: [32]u8) SignError![]u8 {
+    if (interactive) return allocator.dupe(u8, val.getStubSignature());
+    return val.signUserOp(allocator, hash);
+}
 
 /// Create a Kernel smart account.
 ///
@@ -735,7 +830,7 @@ pub export fn aa_account_create(
     impl.* = .{
         .context = c,
         .signer = s,
-        .ecdsa = EcdsaValidator.init(s.getSigner()),
+        .validator_kind = .{ .ecdsa = EcdsaValidator.init(s.getSigner()) },
         .kernel_version = kv,
         .index = index,
         .owner_address = owner_addr,
@@ -777,7 +872,7 @@ pub export fn aa_context_new_account_7702(
     impl.* = .{
         .context = c,
         .signer = s,
-        .ecdsa = EcdsaValidator.init(s.getSigner()),
+        .validator_kind = .{ .ecdsa = EcdsaValidator.init(s.getSigner()) },
         .kernel_version = kv,
         .index = 0,
         .owner_address = owner_addr,
@@ -786,6 +881,87 @@ pub export fn aa_context_new_account_7702(
         .mode = .eip7702,
         .delegation_installed = null,
     };
+
+    out.?.* = impl;
+    return .ok;
+}
+
+/// Create a passkey (WebAuthn) owned account. The account is owned by the
+/// credential (pub_x, pub_y, authenticator_id_hash); sign_fn runs the ceremony
+/// on the host. contract_version selects the WebAuthn validator (0=v0.0.1,
+/// 1=v0.0.2, 2=v0.0.3). The counterfactual address matches @zerodev/sdk.
+pub export fn aa_account_create_passkey(
+    ctx: ?*ContextImpl,
+    sign_fn: ?WebAuthnSignFn,
+    user_ctx: ?*anyopaque,
+    pub_x: ?[*]const u8,
+    pub_y: ?[*]const u8,
+    authenticator_id_hash: ?[*]const u8,
+    contract_version: c_int,
+    chain_id: u64,
+    version: c_int,
+    index: u32,
+    out: ?*?*AccountImpl,
+) callconv(.c) Status {
+    if (out == null) return .null_out_ptr;
+    const c = ctx orelse return .null_context;
+    const sfn = sign_fn orelse return .invalid_signer;
+    if (pub_x == null or pub_y == null or authenticator_id_hash == null) return .null_out_ptr;
+
+    const kv = KernelVersion.fromInt(@intCast(version)) orelse {
+        setLastError("invalid kernel version: {d}", .{version});
+        return .invalid_kernel_version;
+    };
+    const cv: webauthn.ContractVersion = switch (contract_version) {
+        0 => .v0_0_1,
+        1 => .v0_0_2,
+        2 => .v0_0_3,
+        else => {
+            setLastError("invalid WebAuthn contract version: {d}", .{contract_version});
+            return .invalid_signer;
+        },
+    };
+
+    const x = std.mem.readInt(u256, pub_x.?[0..32], .big);
+    const y = std.mem.readInt(u256, pub_y.?[0..32], .big);
+    var id_hash: [32]u8 = undefined;
+    @memcpy(&id_hash, authenticator_id_hash.?[0..32]);
+
+    const allocator = c.allocator;
+    const impl = allocator.create(AccountImpl) catch return .out_of_memory;
+
+    // Place the bridge at its final (heap) address first, then build the
+    // validator pointing at it.
+    impl.validator_kind = .{ .webauthn = .{
+        .bridge = .{ .sign_fn = sfn, .user_ctx = user_ctx },
+        .validator = undefined,
+    } };
+    impl.validator_kind.webauthn.validator = webauthn.WebAuthnValidator.init(
+        impl.validator_kind.webauthn.bridge.webAuthnSigner(),
+        x,
+        y,
+        id_hash,
+        cv,
+        chain_id,
+    );
+
+    const validator_addr = Address.fromBytes(webauthn.validatorAddress(cv));
+    const enable = webauthn.WebAuthnValidator.encodeEnableData(x, y, id_hash);
+    const sender_addr = create2.getKernelAddressGeneric(allocator, validator_addr, &enable, @as(u256, index), kv) catch {
+        allocator.destroy(impl);
+        setLastError("failed to compute passkey account address", .{});
+        return .get_address_failed;
+    };
+
+    impl.context = c;
+    impl.signer = null;
+    impl.kernel_version = kv;
+    impl.index = index;
+    // No EOA owner; the validator address stands in for owner-address uses.
+    impl.owner_address = validator_addr;
+    impl.sender_address = sender_addr;
+    impl.mode = .kernel_create2;
+    impl.delegation_installed = null;
 
     out.?.* = impl;
     return .ok;
@@ -870,7 +1046,9 @@ fn prepareEip7702Authorization(
         setLastError("eth_getTransactionCount(pending) failed: {s}", .{@errorName(err)});
         return AuthPrepError.RpcFailed;
     };
-    const signer_iface = acc.signer.getSigner();
+    // EIP-7702 is an EOA path, so a local signer is always present here.
+    const signer_impl = acc.signer orelse return AuthPrepError.SignFailed;
+    const signer_iface = signer_impl.getSigner();
     const signed = signer_iface.signAuthorization(chain_id, target, eoa_nonce) catch |err| {
         setLastError("signAuthorization failed: {s}", .{@errorName(err)});
         return AuthPrepError.SignFailed;
@@ -960,15 +1138,19 @@ pub export fn aa_userop_build(
         @memcpy(init_code[0..20], &meta_factory.bytes);
         @memcpy(init_code[20..], factory_data);
     } else if (acc.mode == .eip7702) {
-        const rpc_url: []const u8 = if (acc.context.bundler_url.len > 0)
+        // 7702 reads use the node RPC, not the bundler. Fall back to the
+        // bundler URL for callers that predate the rpc_url split.
+        const read_url: []const u8 = if (acc.context.rpc_url.len > 0)
+            acc.context.rpc_url
+        else if (acc.context.bundler_url.len > 0)
             acc.context.bundler_url
         else
             core.buildRpcUrl(a, acc.context.project_id, acc.context.chain_id) catch {
-                setLastError("failed to build RPC URL from project_id", .{});
+                setLastError("failed to build read RPC URL", .{});
                 return .build_userop_failed;
             };
-        var rpc = Client.init(a, rpc_url) catch {
-            setLastError("failed to create RPC client", .{});
+        var rpc = Client.init(a, read_url) catch {
+            setLastError("failed to create read RPC client", .{});
             return .build_userop_failed;
         };
         wireTransport(&rpc, acc.context);
@@ -1067,18 +1249,13 @@ pub export fn aa_userop_sign(
     const hash = user_op.computeHash(entry_point, @as(u256, userop.chain_id));
 
     var val = acc.getValidator();
-    const sig = val.signUserOp(hash.bytes) catch {
-        setLastError("ECDSA signing failed", .{});
+    // The signature is allocated in the arena, which the UserOp owns and frees.
+    const a = userop.arena.allocator();
+    const sig = val.signUserOp(a, hash.bytes) catch {
+        setLastError("validator signing failed", .{});
         return .sign_userop_failed;
     };
-
-    // Store signature in the arena
-    const a = userop.arena.allocator();
-    const sig_copy = a.alloc(u8, 65) catch {
-        return .out_of_memory;
-    };
-    @memcpy(sig_copy, &sig);
-    userop.signature = sig_copy;
+    userop.signature = sig;
 
     return .ok;
 }
@@ -1250,6 +1427,19 @@ pub export fn aa_get_last_error() callconv(.c) [*:0]const u8 {
     return @ptrCast(&last_error_buf);
 }
 
+threadlocal var last_rpc_error_cstr: [transport.last_rpc_error_max + 1]u8 = undefined;
+
+/// The server's last JSON-RPC error as a C string, or "". aa_get_last_error is
+/// the SDK's summary; this is the reason the server sent.
+pub export fn aa_get_last_rpc_error() callconv(.c) [*:0]const u8 {
+    const detail = transport.lastRpcError();
+    if (detail.len == 0) return "";
+    const n = @min(detail.len, last_rpc_error_cstr.len - 1);
+    @memcpy(last_rpc_error_cstr[0..n], detail[0..n]);
+    last_rpc_error_cstr[n] = 0;
+    return @ptrCast(&last_rpc_error_cstr);
+}
+
 // ---- High-level send (full pipeline: nonce → build → paymaster → estimate → sign → send) ----
 
 pub export fn aa_send_userop(
@@ -1269,17 +1459,33 @@ pub export fn aa_send_userop(
     defer arena.deinit();
     const a = arena.allocator();
 
-    // Resolve RPC URL: use bundler_url if set, else derive from project_id + chain_id
-    const rpc_url: []const u8 = if (acc.context.bundler_url.len > 0)
+    // Reads use the node RPC; the bundler and paymaster use the bundler URL.
+    // They may be different providers, so each needs its own client. Reads
+    // fall back to the bundler URL for callers that predate the rpc_url split.
+    const read_url: []const u8 = if (acc.context.rpc_url.len > 0)
+        acc.context.rpc_url
+    else if (acc.context.bundler_url.len > 0)
         acc.context.bundler_url
     else
         core.buildRpcUrl(a, acc.context.project_id, acc.context.chain_id) catch {
-            setLastError("failed to build RPC URL from project_id", .{});
+            setLastError("failed to build read RPC URL", .{});
             return .send_userop_failed;
         };
+    var read_rpc = Client.init(a, read_url) catch {
+        setLastError("failed to create read RPC client", .{});
+        return .send_userop_failed;
+    };
+    wireTransport(&read_rpc, acc.context);
 
-    var rpc = Client.init(a, rpc_url) catch {
-        setLastError("failed to create RPC client", .{});
+    const bundler_url: []const u8 = if (acc.context.bundler_url.len > 0)
+        acc.context.bundler_url
+    else
+        core.buildRpcUrl(a, acc.context.project_id, acc.context.chain_id) catch {
+            setLastError("failed to build bundler RPC URL", .{});
+            return .send_userop_failed;
+        };
+    var rpc = Client.init(a, bundler_url) catch {
+        setLastError("failed to create bundler RPC client", .{});
         return .send_userop_failed;
     };
     wireTransport(&rpc, acc.context);
@@ -1288,7 +1494,7 @@ pub export fn aa_send_userop(
     const entry_point = Address.fromHex(core.ENTRY_POINT_V07) catch return .send_userop_failed;
 
     // Step 1: Get nonce
-    const nonce = entrypoint_mod.getNonce(&rpc, a, core.ENTRY_POINT_V07, acc.sender_address, 0) catch |err| {
+    const nonce = entrypoint_mod.getNonce(&read_rpc, a, core.ENTRY_POINT_V07, acc.sender_address, 0) catch |err| {
         setLastError("getNonce failed: {s}", .{@errorName(err)});
         return .send_userop_failed;
     };
@@ -1325,7 +1531,7 @@ pub export fn aa_send_userop(
     var eip7702_auth: ?core.Authorization = null;
     if (acc.mode == .kernel_create2) {
         if (nonce == 0) {
-            const factory_data = create2.buildFactoryCalldata(a, acc.owner_address, @as(u256, acc.index), acc.kernel_version) catch {
+            const factory_data = acc.buildFactoryData(a) catch {
                 setLastError("failed to build factory calldata", .{});
                 return .build_userop_failed;
             };
@@ -1335,7 +1541,7 @@ pub export fn aa_send_userop(
             @memcpy(init_code[20..], factory_data);
         }
     } else {
-        eip7702_auth = prepareEip7702Authorization(acc, &rpc, a, chain_id) catch |err| switch (err) {
+        eip7702_auth = prepareEip7702Authorization(acc, &read_rpc, a, chain_id) catch |err| switch (err) {
             AuthPrepError.RpcFailed => return .send_userop_failed,
             AuthPrepError.SignFailed => return .sign_userop_failed,
         };
@@ -1366,6 +1572,10 @@ pub export fn aa_send_userop(
     };
 
     var val = acc.getValidator();
+    // Gas estimation uses the stub for interactive (passkey) signing so the user
+    // is prompted only once — for the final signature; ECDSA signs for real
+    // throughout, exactly as before.
+    const interactive = acc.interactiveSigning();
 
     // Paymaster middleware is optional — if not set, send unsponsored (user pays gas)
     const pm_mw = acc.context.paymaster_middleware;
@@ -1376,11 +1586,11 @@ pub export fn aa_send_userop(
     // Step 6: Paymaster stub (before gas estimation) — skip if no paymaster
     if (pm_mw) |mw| {
         const stub_hash = user_op.computeHash(entry_point, @as(u256, chain_id));
-        const stub_sig = val.signUserOp(stub_hash.bytes) catch {
+        const stub_sig = estimationSignature(a, val, interactive, stub_hash.bytes) catch {
             setLastError("signing for paymaster stub failed", .{});
             return .sign_userop_failed;
         };
-        const stub_json_val = user_op.toJsonValue(a, &stub_sig) catch return .serialize_failed;
+        const stub_json_val = user_op.toJsonValue(a, stub_sig) catch return .serialize_failed;
         const stub_json_str = std.json.Stringify.valueAlloc(a, stub_json_val, .{}) catch return .serialize_failed;
 
         var pm_result: PaymasterResult = undefined;
@@ -1404,11 +1614,11 @@ pub export fn aa_send_userop(
     // Step 7: Estimate gas
     const gas = blk: {
         const est_hash = user_op.computeHash(entry_point, @as(u256, chain_id));
-        const est_sig = val.signUserOp(est_hash.bytes) catch {
+        const est_sig = estimationSignature(a, val, interactive, est_hash.bytes) catch {
             setLastError("signing for gas estimation failed", .{});
             return .sign_userop_failed;
         };
-        const est_json = user_op.toJsonValue(a, &est_sig) catch return .serialize_failed;
+        const est_json = user_op.toJsonValue(a, est_sig) catch return .serialize_failed;
 
         break :blk bundler_mod.estimateUserOperationGas(&rpc, a, est_json, core.ENTRY_POINT_V07) catch |err| {
             setLastError("eth_estimateUserOperationGas failed: {s}", .{@errorName(err)});
@@ -1435,11 +1645,11 @@ pub export fn aa_send_userop(
         user_op.paymaster_and_data = pm_packed_est;
 
         const final_hash = user_op.computeHash(entry_point, @as(u256, chain_id));
-        const final_sig = val.signUserOp(final_hash.bytes) catch {
+        const final_sig = val.signUserOp(a, final_hash.bytes) catch {
             setLastError("signing for final paymaster failed", .{});
             return .sign_userop_failed;
         };
-        const final_json_val = user_op.toJsonValue(a, &final_sig) catch return .serialize_failed;
+        const final_json_val = user_op.toJsonValue(a, final_sig) catch return .serialize_failed;
         const final_json_str = std.json.Stringify.valueAlloc(a, final_json_val, .{}) catch return .serialize_failed;
 
         var pm_result: PaymasterResult = undefined;
@@ -1462,13 +1672,13 @@ pub export fn aa_send_userop(
 
     // Step 10: Final sign
     const op_hash = user_op.computeHash(entry_point, @as(u256, chain_id));
-    const real_sig = val.signUserOp(op_hash.bytes) catch {
-        setLastError("final ECDSA signing failed", .{});
+    const real_sig = val.signUserOp(a, op_hash.bytes) catch {
+        setLastError("final validator signing failed", .{});
         return .sign_userop_failed;
     };
 
     // Step 11: Send
-    const send_json = user_op.toJsonValue(a, &real_sig) catch {
+    const send_json = user_op.toJsonValue(a, real_sig) catch {
         setLastError("failed to serialize final UserOp", .{});
         return .serialize_failed;
     };
@@ -1585,6 +1795,237 @@ pub export fn aa_wait_for_user_operation_receipt(
 
     setLastError("receipt polling timed out after {d}ms", .{timeout});
     return .receipt_timeout;
+}
+
+// ---- Validator enable-data and plugin lifecycle calldata ----
+//
+// These let the host install a validator (co-ownership / guardians) or rotate
+// the account's owner. The account signs the resulting call with its current
+// sudo validator, so it's sent as a normal UserOp targeting the account itself.
+// Every returned buffer is heap-allocated; free it with aa_free.
+
+/// abi.encode((uint256 x, uint256 y), bytes32 authenticatorIdHash) for a passkey
+/// (WebAuthn) validator. Writes exactly 96 bytes into out[0..96].
+pub export fn aa_encode_webauthn_enable_data(
+    pub_x: ?[*]const u8,
+    pub_y: ?[*]const u8,
+    authenticator_id_hash: ?[*]const u8,
+    out: ?[*]u8,
+) callconv(.c) Status {
+    if (pub_x == null or pub_y == null or authenticator_id_hash == null or out == null) return .null_out_ptr;
+    const x = std.mem.readInt(u256, pub_x.?[0..32], .big);
+    const y = std.mem.readInt(u256, pub_y.?[0..32], .big);
+    var hash: [32]u8 = undefined;
+    @memcpy(&hash, authenticator_id_hash.?[0..32]);
+    const enable = webauthn.WebAuthnValidator.encodeEnableData(x, y, hash);
+    @memcpy(out.?[0..96], &enable);
+    return .ok;
+}
+
+/// abi.encode(address[] guardians, uint24[] weights, uint24 threshold, uint48
+/// delay) for the weighted-ECDSA validator. guardians is count*20 bytes;
+/// weights is count entries. The result is allocated into out/out_len.
+pub export fn aa_encode_weighted_enable_data(
+    guardians: ?[*]const u8,
+    weights: ?[*]const u32,
+    count: usize,
+    threshold: u32,
+    delay: u64,
+    out: ?*[*]u8,
+    out_len: ?*usize,
+) callconv(.c) Status {
+    if (out == null or out_len == null) return .null_out_ptr;
+    if (guardians == null or weights == null or count == 0) return .encode_failed;
+
+    const allocator = defaultAllocator();
+    const set = allocator.alloc(weighted.Guardian, count) catch return .out_of_memory;
+    defer allocator.free(set);
+    for (0..count) |i| {
+        var addr: [20]u8 = undefined;
+        @memcpy(&addr, guardians.?[i * 20 .. i * 20 + 20]);
+        // The abi fields are narrower than the C ints, so a value that does
+        // not fit would silently wrap in ReleaseFast. Reject it instead.
+        const weight = std.math.cast(u24, weights.?[i]) orelse {
+            setLastError("guardian weight exceeds the uint24 abi field", .{});
+            return .encode_failed;
+        };
+        set[i] = .{ .address = addr, .weight = weight };
+    }
+
+    const threshold_u24 = std.math.cast(u24, threshold) orelse {
+        setLastError("threshold exceeds the uint24 abi field", .{});
+        return .encode_failed;
+    };
+    const delay_u48 = std.math.cast(u48, delay) orelse {
+        setLastError("delay exceeds the uint48 abi field", .{});
+        return .encode_failed;
+    };
+    const data = weighted.WeightedValidator.encodeEnableData(allocator, set, threshold_u24, delay_u48) catch {
+        setLastError("failed to encode weighted enable-data", .{});
+        return .encode_failed;
+    };
+    out.?.* = data.ptr;
+    out_len.?.* = data.len;
+    return .ok;
+}
+
+/// Calldata to install `module` as a secondary validator with `validator_data`
+/// (its enable-data). Send it to the account as a UserOp.
+pub export fn aa_encode_install_validator(
+    module: ?[*]const u8,
+    validator_data: ?[*]const u8,
+    validator_data_len: usize,
+    out: ?*[*]u8,
+    out_len: ?*usize,
+) callconv(.c) Status {
+    return encodePluginCall(true, module, validator_data, validator_data_len, out, out_len);
+}
+
+/// Calldata to make `module` the account's root (sudo) validator with
+/// `validator_data` (its enable-data). Send it to the account as a UserOp.
+pub export fn aa_encode_change_root_validator(
+    module: ?[*]const u8,
+    validator_data: ?[*]const u8,
+    validator_data_len: usize,
+    out: ?*[*]u8,
+    out_len: ?*usize,
+) callconv(.c) Status {
+    return encodePluginCall(false, module, validator_data, validator_data_len, out, out_len);
+}
+
+/// The value guardians approve for a recovery, written into out[0..32]:
+/// keccak256(abi.encode(sender, callData, nonce)). `nonce_be` is a 32-byte
+/// big-endian uint256. Both guardian kinds approve this exact hash.
+pub export fn aa_recovery_hash(
+    sender: ?[*]const u8,
+    call_data: ?[*]const u8,
+    call_data_len: usize,
+    nonce_be: ?[*]const u8,
+    out: ?[*]u8,
+) callconv(.c) Status {
+    if (out == null or sender == null or nonce_be == null) return .null_out_ptr;
+    var s: [20]u8 = undefined;
+    @memcpy(&s, sender.?[0..20]);
+    const cd: []const u8 = if (call_data) |p| p[0..call_data_len] else &[_]u8{};
+    const nonce = std.mem.readInt(u256, nonce_be.?[0..32], .big);
+    const h = plugin.callDataAndNonceHash(defaultAllocator(), s, cd, nonce) catch {
+        setLastError("failed to compute recovery hash", .{});
+        return .encode_failed;
+    };
+    @memcpy(out.?[0..32], &h);
+    return .ok;
+}
+
+/// Calldata for approve(hash, kernel) on the weighted validator, for a smart
+/// account guardian to record its approval on chain. Send it to the validator.
+pub export fn aa_encode_approve(
+    hash: ?[*]const u8,
+    kernel: ?[*]const u8,
+    out: ?*[*]u8,
+    out_len: ?*usize,
+) callconv(.c) Status {
+    if (out == null or out_len == null or hash == null or kernel == null) return .null_out_ptr;
+    var h: [32]u8 = undefined;
+    @memcpy(&h, hash.?[0..32]);
+    var k: [20]u8 = undefined;
+    @memcpy(&k, kernel.?[0..20]);
+    const cd = plugin.approveCallData(defaultAllocator(), h, k) catch {
+        setLastError("failed to encode approve calldata", .{});
+        return .encode_failed;
+    };
+    out.?.* = cd.ptr;
+    out_len.?.* = cd.len;
+    return .ok;
+}
+
+/// The account's next nonce for a userop validated by `validator` (a secondary
+/// validator such as the weighted guardian validator), written into out[0..32]
+/// big-endian. This is the nonce the recovery hash binds to. The nonce key is
+/// the Kernel v3 encoding: mode 0x00 (default), type 0x01 (secondary), the
+/// validator address, then a zero custom key, matching what EntryPoint expects.
+pub export fn aa_account_nonce_for_validator(
+    account: ?*AccountImpl,
+    validator: ?[*]const u8,
+    out: ?[*]u8,
+) callconv(.c) Status {
+    const acc = account orelse return .null_account;
+    if (out == null or validator == null) return .null_out_ptr;
+
+    var key_bytes: [24]u8 = [_]u8{0} ** 24;
+    key_bytes[1] = 0x01; // secondary validator; mode and custom key stay zero
+    @memcpy(key_bytes[2..22], validator.?[0..20]);
+    const key: u192 = std.mem.readInt(u192, &key_bytes, .big);
+
+    var arena = std.heap.ArenaAllocator.init(acc.context.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Reads fall back to the bundler URL for callers that predate the split.
+    const read_url: []const u8 = if (acc.context.rpc_url.len > 0)
+        acc.context.rpc_url
+    else if (acc.context.bundler_url.len > 0)
+        acc.context.bundler_url
+    else
+        core.buildRpcUrl(a, acc.context.project_id, acc.context.chain_id) catch {
+            setLastError("failed to build read RPC URL", .{});
+            return .send_userop_failed;
+        };
+    var rpc = Client.init(a, read_url) catch {
+        setLastError("failed to create read RPC client", .{});
+        return .send_userop_failed;
+    };
+    wireTransport(&rpc, acc.context);
+
+    const nonce = entrypoint_mod.getNonce(&rpc, a, core.ENTRY_POINT_V07, acc.sender_address, key) catch |err| {
+        setLastError("getNonce failed: {s}", .{@errorName(err)});
+        return .send_userop_failed;
+    };
+    var buf: [32]u8 = undefined;
+    std.mem.writeInt(u256, &buf, nonce, .big);
+    @memcpy(out.?[0..32], &buf);
+    return .ok;
+}
+
+/// Keccak-256 of `data`, written into out[0..32]. Useful for host-side
+/// derivations (e.g. a passkey's authenticatorIdHash = keccak256(credentialId)).
+pub export fn aa_keccak256(
+    data: ?[*]const u8,
+    len: usize,
+    out: ?[*]u8,
+) callconv(.c) Status {
+    if (out == null) return .null_out_ptr;
+    const bytes: []const u8 = if (data) |p| p[0..len] else &[_]u8{};
+    const h = keccak.hashBytes(bytes);
+    @memcpy(out.?[0..32], &h);
+    return .ok;
+}
+
+fn encodePluginCall(
+    install: bool,
+    module: ?[*]const u8,
+    validator_data: ?[*]const u8,
+    validator_data_len: usize,
+    out: ?*[*]u8,
+    out_len: ?*usize,
+) Status {
+    if (out == null or out_len == null) return .null_out_ptr;
+    if (module == null) return .null_out_ptr;
+
+    const allocator = defaultAllocator();
+    var mod: [20]u8 = undefined;
+    @memcpy(&mod, module.?[0..20]);
+    const vdata: []const u8 = if (validator_data) |p| p[0..validator_data_len] else &[_]u8{};
+
+    const cd = (if (install)
+        plugin.installValidatorCallData(allocator, mod, vdata)
+    else
+        plugin.changeRootValidatorCallData(allocator, mod, vdata)) catch {
+        setLastError("failed to encode plugin calldata", .{});
+        return .encode_failed;
+    };
+    out.?.* = cd.ptr;
+    out_len.?.* = cd.len;
+    return .ok;
 }
 
 // ---- Tests (offline; exercise the address-pinning branch of aa_account_create) ----
