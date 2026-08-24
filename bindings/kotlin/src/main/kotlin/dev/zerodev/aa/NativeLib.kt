@@ -47,6 +47,7 @@ internal object NativeLib {
     ): Int
 
     @JvmStatic external fun nAccountGetAddress(accountPtr: Long, addrOut: ByteArray): Int
+    @JvmStatic external fun nAccountSignMessage(accountPtr: Long, message: ByteArray): ByteArray?
     @JvmStatic external fun nAccountDestroy(accountPtr: Long): Int
 
     /* ---- EIP-7702 authorization ---- */

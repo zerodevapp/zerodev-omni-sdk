@@ -24,6 +24,23 @@ public final class Account: @unchecked Sendable {
         return Address(bytes: addr)
     }
 
+    /// Signs a personal message on the smart account's behalf: an 86-byte ERC-1271
+    /// signature — the root validator's identifier followed by the owner's signature
+    /// over the Kernel-domain wrap of the message — that the account's own
+    /// isValidSignature verifies. This is what proves control of the account off
+    /// chain, for a guardian approval the server checks against the account's
+    /// on-chain validator rather than a plain owner-key signature.
+    public func signMessage(_ message: [UInt8]) throws -> [UInt8] {
+        var sig = [UInt8](repeating: 0, count: Int(AA_ERC1271_SIG_LEN))
+        let status = message.withUnsafeBufferPointer { msgBuf in
+            sig.withUnsafeMutableBufferPointer { sigBuf in
+                aa_account_sign_message(ptr, msgBuf.baseAddress, msgBuf.count, sigBuf.baseAddress)
+            }
+        }
+        try checkResult(status)
+        return sig
+    }
+
     public func sendUserOp(calls: [Call]) throws -> Hash {
         let cCalls = try marshalCalls(calls)
         var hashOut = [UInt8](repeating: 0, count: 32)

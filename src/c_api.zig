@@ -109,6 +109,7 @@ pub const Status = enum(c_int) {
     receipt_timeout = 22,
     receipt_failed = 23,
     invalid_signer = 24,
+    sign_message_failed = 25,
 };
 
 // ---- Middleware types ----
@@ -801,6 +802,48 @@ pub export fn aa_account_get_address(
     return .ok;
 }
 
+
+/// The byte length of an ERC-1271 signature produced by aa_account_sign_message:
+/// 1 validator-type byte, the 20-byte root validator address, and the 65-byte
+/// owner signature.
+pub const AA_ERC1271_SIG_LEN: usize = 86;
+
+/// Sign a personal message on behalf of the smart account, producing exactly the
+/// bytes the account's own isValidSignature accepts: the root validator's identifier
+/// followed by the owner's signature over the Kernel-domain wrap of the message's
+/// EIP-191 hash. Writes exactly 86 bytes into sig_out.
+pub export fn aa_account_sign_message(
+    account: ?*AccountImpl,
+    msg: ?[*]const u8,
+    msg_len: usize,
+    sig_out: ?[*]u8,
+) callconv(.c) Status {
+    const acc = account orelse return .null_account;
+    if (sig_out == null) return .null_out_ptr;
+    if (msg == null and msg_len != 0) return .null_out_ptr;
+
+    const message: []const u8 = if (msg) |m| m[0..msg_len] else &[_]u8{};
+    const digest = core.erc1271.kernelPersonalDigest(
+        acc.sender_address,
+        acc.context.chain_id,
+        acc.kernel_version.eip712Version(),
+        message,
+    );
+    const sig = acc.signer.getSigner().signHash(digest) catch {
+        setLastError("signing the wrapped message hash failed", .{});
+        return .sign_message_failed;
+    };
+
+    // Validator routing: type byte 0x01 selects a validator by address, then the
+    // validator's own address, then the owner's 65-byte signature — byte-for-byte
+    // the layout the web client's production-verified approvals submit.
+    sig_out.?[0] = 0x01;
+    const validator_addr = @import("validators/ecdsa.zig").ECDSA_VALIDATOR_ADDR;
+    @memcpy(sig_out.?[1..21], &validator_addr);
+    const sig_bytes = sig.toBytes();
+    @memcpy(sig_out.?[21..86], &sig_bytes);
+    return .ok;
+}
 
 pub export fn aa_account_destroy(account: ?*AccountImpl) callconv(.c) Status {
     const acc = account orelse return .null_account;
@@ -1646,4 +1689,34 @@ test "aa_account_create: non-nil address → sender = passed bytes" {
     // using the pinned bytes and not silently ignoring them.
     const counterfactual = try create2.getKernelAddress(acc.?.owner_address, 0, .v3_3);
     try testing.expect(!std.mem.eql(u8, &counterfactual.bytes, &pinned_bytes));
+}
+
+test "aa_account_sign_message: wire bytes match the TypeScript SDK and the chain" {
+    // The full 86-byte signature for a fixed key and message, produced by the
+    // TypeScript SDK for the same v3.3 account and accepted on Sepolia by the
+    // account's own isValidSignature (ERC-1271 magic). Pins the validator-routing
+    // prefix, the validator address, and the deterministic ECDSA bytes at once.
+    var ctx_out: ?*ContextImpl = null;
+    _ = aa_context_create("proj", "", "", 11155111, &ctx_out);
+    defer _ = aa_context_destroy(ctx_out.?);
+
+    var pk: [32]u8 = undefined;
+    _ = std.fmt.hexToBytes(&pk, "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80") catch unreachable;
+    var signer_out: ?*SignerImpl = null;
+    _ = aa_signer_local(&pk, &signer_out);
+    defer aa_signer_destroy(signer_out.?);
+
+    var acc: ?*AccountImpl = null;
+    try testing.expectEqual(Status.ok, aa_account_create(ctx_out.?, signer_out.?, 0, 0, null, &acc));
+    defer _ = aa_account_destroy(acc);
+
+    const message = "goss guardian approval verify";
+    var sig: [86]u8 = undefined;
+    try testing.expectEqual(Status.ok, aa_account_sign_message(acc, message.ptr, message.len, &sig));
+
+    var expected: [86]u8 = undefined;
+    _ = std.fmt.hexToBytes(&expected, "01845adb2c711129d4f3966735ed98a9f09fc4ce57" ++
+        "1f5eacf27158222c3f5923eeabf601c0e363a216b4318f8d74cafeba73e0962b" ++
+        "377edfee6f1ce3d3d42b584558be8fa4d2c58c47799687e0d90ad6c05a48c56a1c") catch unreachable;
+    try testing.expectEqualSlices(u8, &expected, &sig);
 }

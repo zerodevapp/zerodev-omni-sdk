@@ -10,6 +10,7 @@ pub const bundler = @import("bundler.zig");
 pub const paymaster = @import("paymaster.zig");
 pub const rlp = @import("rlp.zig");
 pub const authorization = @import("authorization.zig");
+pub const erc1271 = @import("erc1271.zig");
 pub const Authorization = authorization.Authorization;
 pub const getKernelAddress = create2.getKernelAddress;
 
@@ -27,6 +28,14 @@ pub const KernelVersion = enum(u8) {
     pub fn factoryAddress(self: KernelVersion) []const u8 {
         return switch (self) {
             .v3_3 => "0x2577507b78c2008Ff367261CB6285d44ba5eF2E9",
+        };
+    }
+
+    /// The version string the deployed Kernel reports from eip712Domain(), which an
+    /// ERC-1271 wrap must reproduce exactly for the digest to match on chain.
+    pub fn eip712Version(self: KernelVersion) []const u8 {
+        return switch (self) {
+            .v3_3 => "0.3.3",
         };
     }
 

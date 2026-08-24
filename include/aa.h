@@ -36,6 +36,7 @@ typedef enum {
     AA_RECEIPT_TIMEOUT = 22,
     AA_RECEIPT_FAILED = 23,
     AA_INVALID_SIGNER = 24,
+    AA_SIGN_MESSAGE_FAILED = 25,
 } aa_status;
 
 /* ---- Kernel version enum ---- */
@@ -284,6 +285,16 @@ aa_status aa_context_new_account_7702(aa_context_t *ctx,
 
 aa_status aa_account_get_address(aa_account_t *account,
                                  uint8_t addr_out[20]);
+
+/* Sign a personal message on behalf of the smart account. Writes the 86-byte
+ * ERC-1271 signature the account's own isValidSignature accepts: one validator
+ * type byte, the 20-byte root validator address, and the owner's 65-byte
+ * signature over the Kernel-domain wrap of the message's EIP-191 hash. */
+#define AA_ERC1271_SIG_LEN 86
+aa_status aa_account_sign_message(aa_account_t *account,
+                                  const uint8_t *msg,
+                                  size_t msg_len,
+                                  uint8_t sig_out[AA_ERC1271_SIG_LEN]);
 
 aa_status aa_account_destroy(aa_account_t *account);
 

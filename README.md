@@ -30,6 +30,10 @@ let account = try ctx.newAccount(signer: signer, version: .v3_3)
 
 let hash = try await account.sendUserOp(calls: [Call(target: addr)])
 let receipt = try await account.waitForUserOperationReceipt(useropHash: hash)
+
+// ERC-1271: sign a personal message as the smart account. The 86-byte result
+// verifies through the account's own isValidSignature on chain.
+let signature = try account.signMessage(Array("hello".utf8))
 ```
 
 ### Custom Signers
@@ -79,6 +83,10 @@ Context.create(projectId, chainId = 11155111).use { ctx ->
     Signer.local(privateKey).use { signer ->
         ctx.newAccount(signer, KernelVersion.V3_3).use { account ->
             val hash = account.sendUserOp(listOf(Call(target = addr)))
+
+            // ERC-1271: sign a personal message as the smart account. The 86-byte
+            // result verifies through the account's own isValidSignature on chain.
+            val signature = account.signMessage("hello".toByteArray())
             val receipt = account.waitForUserOperationReceipt(hash)
         }
     }

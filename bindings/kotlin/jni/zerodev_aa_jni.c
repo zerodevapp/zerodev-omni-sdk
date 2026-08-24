@@ -399,6 +399,26 @@ JNIEXPORT jint JNICALL Java_dev_zerodev_aa_NativeLib_nAccountGetAddress(
     return status;
 }
 
+JNIEXPORT jbyteArray JNICALL Java_dev_zerodev_aa_NativeLib_nAccountSignMessage(
+    JNIEnv *env, jclass cls, jlong account_ptr, jbyteArray message)
+{
+    jsize msg_len = (*env)->GetArrayLength(env, message);
+    jbyte *msg = (*env)->GetByteArrayElements(env, message, NULL);
+    if (msg == NULL && msg_len != 0) return NULL;
+
+    uint8_t sig[AA_ERC1271_SIG_LEN];
+    aa_status status = aa_account_sign_message(
+        (aa_account_t *)(intptr_t)account_ptr,
+        (const uint8_t *)msg, (size_t)msg_len, sig);
+    if (msg != NULL) (*env)->ReleaseByteArrayElements(env, message, msg, JNI_ABORT);
+    if (status != AA_OK) return NULL;
+
+    jbyteArray out = (*env)->NewByteArray(env, AA_ERC1271_SIG_LEN);
+    if (out == NULL) return NULL;
+    (*env)->SetByteArrayRegion(env, out, 0, AA_ERC1271_SIG_LEN, (jbyte *)sig);
+    return out;
+}
+
 JNIEXPORT jint JNICALL Java_dev_zerodev_aa_NativeLib_nAccountDestroy(
     JNIEnv *env, jclass cls, jlong account_ptr)
 {
