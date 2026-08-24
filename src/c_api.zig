@@ -109,6 +109,7 @@ pub const Status = enum(c_int) {
     receipt_timeout = 22,
     receipt_failed = 23,
     invalid_signer = 24,
+    sign_message_failed = 25,
 };
 
 // ---- Middleware types ----
@@ -663,6 +664,7 @@ pub const AccountMode = enum { kernel_create2, eip7702 };
 /// C-facing kernel version constants. Mirror the `aa_kernel_version` enum in
 /// include/aa.h — pass these (not raw integers) when calling the FFI.
 pub const AA_KERNEL_V3_3: c_int = 0;
+pub const AA_KERNEL_V3_1: c_int = 1;
 
 /// Raw bytes of the Kernel v3.3 implementation address — the delegation target
 /// for EIP-7702 accounts.
@@ -801,6 +803,48 @@ pub export fn aa_account_get_address(
     return .ok;
 }
 
+
+/// The byte length of an ERC-1271 signature produced by aa_account_sign_message:
+/// 1 validator-type byte, the 20-byte root validator address, and the 65-byte
+/// owner signature.
+pub const AA_ERC1271_SIG_LEN: usize = 86;
+
+/// Sign a personal message on behalf of the smart account, producing exactly the
+/// bytes the account's own isValidSignature accepts: the root validator's identifier
+/// followed by the owner's signature over the Kernel-domain wrap of the message's
+/// EIP-191 hash. Writes exactly 86 bytes into sig_out.
+pub export fn aa_account_sign_message(
+    account: ?*AccountImpl,
+    msg: ?[*]const u8,
+    msg_len: usize,
+    sig_out: ?[*]u8,
+) callconv(.c) Status {
+    const acc = account orelse return .null_account;
+    if (sig_out == null) return .null_out_ptr;
+    if (msg == null and msg_len != 0) return .null_out_ptr;
+
+    const message: []const u8 = if (msg) |m| m[0..msg_len] else &[_]u8{};
+    const digest = core.erc1271.kernelPersonalDigest(
+        acc.sender_address,
+        acc.context.chain_id,
+        acc.kernel_version.eip712Version(),
+        message,
+    );
+    const sig = acc.signer.getSigner().signHash(digest) catch {
+        setLastError("signing the wrapped message hash failed", .{});
+        return .sign_message_failed;
+    };
+
+    // Validator routing: type byte 0x01 selects a validator by address, then the
+    // validator's own address, then the owner's 65-byte signature — byte-for-byte
+    // the layout the web client's production-verified approvals submit.
+    sig_out.?[0] = 0x01;
+    const validator_addr = @import("validators/ecdsa.zig").ECDSA_VALIDATOR_ADDR;
+    @memcpy(sig_out.?[1..21], &validator_addr);
+    const sig_bytes = sig.toBytes();
+    @memcpy(sig_out.?[21..86], &sig_bytes);
+    return .ok;
+}
 
 pub export fn aa_account_destroy(account: ?*AccountImpl) callconv(.c) Status {
     const acc = account orelse return .null_account;

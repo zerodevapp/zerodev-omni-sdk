@@ -18,6 +18,18 @@ class Account internal constructor(
         return Address(addrBytes)
     }
 
+    /**
+     * Signs a personal message on the smart account's behalf: an 86-byte ERC-1271
+     * signature — the root validator's identifier followed by the owner's signature
+     * over the Kernel-domain wrap of the message — that the account's own
+     * isValidSignature verifies.
+     */
+    fun signMessage(message: ByteArray): ByteArray {
+        check(!closed) { "Account is closed" }
+        return NativeLib.nAccountSignMessage(ptr, message)
+            ?: throw AaException(AaStatus.SIGN_MESSAGE_FAILED, NativeLib.nGetLastError())
+    }
+
     fun sendUserOp(calls: List<Call>): Hash {
         check(!closed) { "Account is closed" }
         require(calls.isNotEmpty()) { "calls must not be empty" }

@@ -10,6 +10,7 @@ pub const bundler = @import("bundler.zig");
 pub const paymaster = @import("paymaster.zig");
 pub const rlp = @import("rlp.zig");
 pub const authorization = @import("authorization.zig");
+pub const erc1271 = @import("erc1271.zig");
 pub const Authorization = authorization.Authorization;
 pub const getKernelAddress = create2.getKernelAddress;
 
@@ -19,20 +20,33 @@ pub const KERNEL_V3_3_DELEGATION_TARGET: [20]u8 = [_]u8{
     0xbe, 0x9d, 0x46, 0x7c, 0xd6, 0xad, 0x37, 0x87, 0x5b, 0x28,
 };
 
-/// Kernel smart account versions. Only v3.3 is supported today — earlier
-/// versions were never wired into examples, e2e tests, or language bindings.
+/// Kernel smart account versions. v3.3 is the default; v3.1 is supported so a
+/// client can derive the same counterfactual address as an existing deployment
+/// pinned to it — the same owner key yields a different account per version.
 pub const KernelVersion = enum(u8) {
     v3_3 = 0,
+    v3_1 = 1,
 
     pub fn factoryAddress(self: KernelVersion) []const u8 {
         return switch (self) {
             .v3_3 => "0x2577507b78c2008Ff367261CB6285d44ba5eF2E9",
+            .v3_1 => "0xaac5D4240AF87249B3f71BC8E4A2cae074A3E419",
+        };
+    }
+
+    /// The version string the deployed Kernel reports from eip712Domain(), which an
+    /// ERC-1271 wrap must reproduce exactly for the digest to match on chain.
+    pub fn eip712Version(self: KernelVersion) []const u8 {
+        return switch (self) {
+            .v3_3 => "0.3.3",
+            .v3_1 => "0.3.1",
         };
     }
 
     pub fn implementationAddress(self: KernelVersion) []const u8 {
         return switch (self) {
             .v3_3 => "0xd6CEDDe84be40893d153Be9d467CD6aD37875b28",
+            .v3_1 => "0xBAC849bB641841b44E965fB01A4Bf5F074f84b4D",
         };
     }
 
@@ -42,17 +56,20 @@ pub const KernelVersion = enum(u8) {
     pub fn delegationTarget(self: KernelVersion) ?[20]u8 {
         return switch (self) {
             .v3_3 => KERNEL_V3_3_DELEGATION_TARGET,
+            .v3_1 => null,
         };
     }
 
     pub fn fromString(str: []const u8) ?KernelVersion {
         if (std.mem.eql(u8, str, "v3.3") or std.mem.eql(u8, str, "3.3")) return .v3_3;
+        if (std.mem.eql(u8, str, "v3.1") or std.mem.eql(u8, str, "3.1")) return .v3_1;
         return null;
     }
 
     pub fn toString(self: KernelVersion) []const u8 {
         return switch (self) {
             .v3_3 => "v3.3",
+            .v3_1 => "v3.1",
         };
     }
 
@@ -63,6 +80,7 @@ pub const KernelVersion = enum(u8) {
     pub fn fromInt(val: u8) ?KernelVersion {
         return switch (val) {
             0 => .v3_3,
+            1 => .v3_1,
             else => null,
         };
     }
@@ -111,5 +129,6 @@ test "KernelVersion fromString" {
     try std.testing.expectEqual(KernelVersion.v3_3, KernelVersion.fromString("v3.3").?);
     try std.testing.expectEqual(KernelVersion.v3_3, KernelVersion.fromString("3.3").?);
     try std.testing.expect(KernelVersion.fromString("v4.0") == null);
-    try std.testing.expect(KernelVersion.fromString("v3.1") == null);
+    try std.testing.expectEqual(KernelVersion.v3_1, KernelVersion.fromString("v3.1").?);
+    try std.testing.expectEqual(KernelVersion.v3_1, KernelVersion.fromString("3.1").?);
 }

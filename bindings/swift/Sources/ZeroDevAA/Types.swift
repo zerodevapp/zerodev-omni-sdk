@@ -54,6 +54,9 @@ public struct Hash: Sendable, CustomStringConvertible {
 
 public enum KernelVersion: Int32, Sendable {
     case v3_3 = 0
+    /// Kernel v3.1 — for deriving the same counterfactual address as an existing
+    /// deployment pinned to it; the same owner key yields a different account per version.
+    case v3_1 = 1
 }
 
 /// EIP-7702 authorization tuple.

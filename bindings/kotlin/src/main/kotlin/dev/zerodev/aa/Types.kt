@@ -39,6 +39,10 @@ value class Hash(val bytes: ByteArray) {
 
 enum class KernelVersion(val code: Int) {
     V3_3(0),
+
+    /** Kernel v3.1 — for deriving the same counterfactual address as an existing deployment
+     *  pinned to it; the same owner key yields a different account per version. */
+    V3_1(1),
 }
 
 /** Gas pricing middleware provider. */

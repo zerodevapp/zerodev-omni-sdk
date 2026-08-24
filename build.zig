@@ -4,6 +4,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const static_only = b.option(bool, "static-only", "Only build static library (skip dynamic — needed for iOS cross-compilation)") orelse false;
+    const with_jni = b.option(bool, "jni", "Compile the Kotlin JNI bridge into the dynamic library (Android)") orelse false;
 
     // Get zabi dependency (replaces zigeth + zig_eth_secp256k1).
     const zabi_dep = b.dependency("zabi", .{
@@ -82,6 +83,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .link_libc = true,
+        // Strip debug info so the static lib doesn't pull in Zig's stack-trace
+        // machinery, which references dyld image APIs that don't resolve when the
+        // library links into an iOS app. It's a leaf dependency with its own error
+        // returns, so it never needs a Zig panic trace.
+        .strip = true,
     });
     c_api_mod.addImport("zabi", zabi_mod);
     c_api_mod.addImport("primitives", primitives_mod);
@@ -113,6 +119,13 @@ pub fn build(b: *std.Build) void {
         dynamic_lib.root_module.addImport("primitives", primitives_mod);
         dynamic_lib.root_module.addImport("transport", transport_mod);
         dynamic_lib.root_module.addImport("signers", signers_mod);
+        // Compile the Kotlin JNI bridge straight into the shared library, so one
+        // artifact serves Android (jni.h comes from the libc include dir, which an
+        // Android build points at the NDK sysroot via --libc).
+        if (with_jni) {
+            dynamic_lib.root_module.addCSourceFile(.{ .file = b.path("bindings/kotlin/jni/zerodev_aa_jni.c") });
+            dynamic_lib.root_module.addIncludePath(b.path("include"));
+        }
         b.installArtifact(dynamic_lib);
     }
 

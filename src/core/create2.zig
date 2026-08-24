@@ -299,6 +299,34 @@ test "buildFactoryCalldata bytes length is 292" {
     try std.testing.expectEqual(@as(u8, 0x24), result[131]);
 }
 
+test "initCodeHash matches SDK constant — v3.1" {
+    const impl = try Address.fromHex("0xBAC849bB641841b44E965fB01A4Bf5F074f84b4D");
+    const h = initCodeHashERC1967(impl);
+    const expected = try Hash.fromHex("0x85d96aa1c9a65886d094915d76ccae85f14027a02c1647dde659f869460f03e6");
+    try std.testing.expect(h.eql(expected));
+}
+
+test "getKernelAddress matches SDK — v3.1, index=0" {
+    const owner = try Address.fromHex("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
+    const addr = try getKernelAddress(owner, 0, .v3_1);
+    const expected = try Address.fromHex("0xB3729F7e1Ab0B4a50E7De5599Ecc321B8775d30d");
+    try std.testing.expectEqualSlices(u8, &expected.bytes, &addr.bytes);
+}
+
+test "getKernelAddress matches SDK — v3.1, index=1" {
+    const owner = try Address.fromHex("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
+    const addr = try getKernelAddress(owner, 1, .v3_1);
+    const expected = try Address.fromHex("0x01a94a8366D0d3cb7aC39b9d078882e9a5cc0a77");
+    try std.testing.expectEqualSlices(u8, &expected.bytes, &addr.bytes);
+}
+
+test "getKernelAddress matches SDK — different owner, v3.1, index=0" {
+    const owner = try Address.fromHex("0x70997970C51812dc3A010C7d01b50e0d17dc79C8");
+    const addr = try getKernelAddress(owner, 0, .v3_1);
+    const expected = try Address.fromHex("0xEC4b217240f0292c65Bf136b341e400e2D28cA6F");
+    try std.testing.expectEqualSlices(u8, &expected.bytes, &addr.bytes);
+}
+
 test "buildFactoryCalldata initData matches computeInitializeCalldata" {
     const allocator = std.testing.allocator;
     const owner = try Address.fromHex("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
