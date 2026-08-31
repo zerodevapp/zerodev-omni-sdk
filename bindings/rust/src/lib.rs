@@ -293,6 +293,12 @@ impl Context {
                     Some(ffi::aa_gas_zerodev),
                 ))?;
             },
+            GasMiddleware::Pimlico => unsafe {
+                error::check(ffi::aa_context_set_gas_middleware(
+                    ctx,
+                    Some(ffi::aa_gas_pimlico),
+                ))?;
+            },
         }
 
         // Set paymaster middleware (optional)

@@ -76,6 +76,8 @@ impl KernelVersion {
 pub enum GasMiddleware {
     /// ZeroDev: calls zd_getUserOperationGasPrice.
     ZeroDev,
+    /// Pimlico: calls pimlico_getUserOperationGasPrice.
+    Pimlico,
 }
 
 /// Paymaster sponsorship middleware provider.

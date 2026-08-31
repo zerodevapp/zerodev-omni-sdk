@@ -168,6 +168,9 @@ _lib.aa_context_destroy.restype = ctypes.c_int
 _lib.aa_gas_zerodev.argtypes = [ctypes.POINTER(_Context), ctypes.POINTER(AaGasPricesT)]
 _lib.aa_gas_zerodev.restype = ctypes.c_int
 
+_lib.aa_gas_pimlico.argtypes = [ctypes.POINTER(_Context), ctypes.POINTER(AaGasPricesT)]
+_lib.aa_gas_pimlico.restype = ctypes.c_int
+
 _lib.aa_paymaster_zerodev.argtypes = [
     ctypes.POINTER(_Context), ctypes.c_char_p, ctypes.c_size_t,
     ctypes.c_char_p, ctypes.c_uint64, ctypes.c_int, ctypes.POINTER(AaPaymasterResultT)

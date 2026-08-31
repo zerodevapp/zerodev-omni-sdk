@@ -56,6 +56,13 @@ JNIEXPORT jint JNICALL Java_dev_zerodev_aa_NativeLib_nContextSetGasZeroDev(
         (aa_context_t *)(intptr_t)ctx_ptr, aa_gas_zerodev);
 }
 
+JNIEXPORT jint JNICALL Java_dev_zerodev_aa_NativeLib_nContextSetGasPimlico(
+    JNIEnv *env, jclass cls, jlong ctx_ptr)
+{
+    return (jint)aa_context_set_gas_middleware(
+        (aa_context_t *)(intptr_t)ctx_ptr, aa_gas_pimlico);
+}
+
 JNIEXPORT jint JNICALL Java_dev_zerodev_aa_NativeLib_nContextSetPaymasterZeroDev(
     JNIEnv *env, jclass cls, jlong ctx_ptr)
 {

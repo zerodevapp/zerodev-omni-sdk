@@ -302,6 +302,13 @@ aa_signer_destroy(signer);
 aa_context_destroy(ctx);
 ```
 
+> **Dedicated bundler endpoints:** pointing `bundler_url` at a provider that only
+> serves ERC-4337 methods (e.g. Pimlico) works out of the box. Chain reads such as
+> the EntryPoint nonce go to the configured `rpc_url`, and `aa_gas_pimlico` selects
+> that provider's own gas price method (`pimlico_getUserOperationGasPrice`). Every
+> binding exposes the same choice: `.pimlico` in Swift, `PIMLICO` in Kotlin and
+> Python, `GasPimlico` in Go, `Pimlico` in Rust.
+
 ---
 
 ## Signer Types

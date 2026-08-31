@@ -34,6 +34,9 @@ class Context:
             # Get raw function pointer from the loaded library
             gas_fn = ctypes.cast(_lib.aa_gas_zerodev, ctypes.c_void_p)
             check(_lib.aa_context_set_gas_middleware(self._ptr, gas_fn))
+        elif gas == GasMiddleware.PIMLICO:
+            gas_fn = ctypes.cast(_lib.aa_gas_pimlico, ctypes.c_void_p)
+            check(_lib.aa_context_set_gas_middleware(self._ptr, gas_fn))
 
         # Set paymaster middleware
         if paymaster == PaymasterMiddleware.ZERODEV:

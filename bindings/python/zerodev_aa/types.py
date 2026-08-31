@@ -10,6 +10,7 @@ class KernelVersion(IntEnum):
 
 class GasMiddleware(IntEnum):
     ZERODEV = 0
+    PIMLICO = 1
 
 
 class PaymasterMiddleware(IntEnum):

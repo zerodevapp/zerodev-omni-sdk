@@ -18,6 +18,7 @@ class Context private constructor(internal val ptr: Long) : AutoCloseable {
 
             when (gasMiddleware) {
                 GasMiddleware.ZERODEV -> checkStatus(NativeLib.nContextSetGasZeroDev(ctx))
+                GasMiddleware.PIMLICO -> checkStatus(NativeLib.nContextSetGasPimlico(ctx))
             }
 
             when (paymasterMiddleware) {

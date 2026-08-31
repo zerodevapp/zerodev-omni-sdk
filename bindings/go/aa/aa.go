@@ -61,6 +61,8 @@ type GasMiddleware int
 const (
 	// GasZeroDev uses zd_getUserOperationGasPrice.
 	GasZeroDev GasMiddleware = iota
+	// GasPimlico uses pimlico_getUserOperationGasPrice.
+	GasPimlico
 )
 
 // PaymasterMiddleware selects the paymaster sponsorship provider.
@@ -352,6 +354,8 @@ func NewContext(projectID, rpcURL, bundlerURL string, chainID uint64, gas GasMid
 	switch gas {
 	case GasZeroDev:
 		C.aa_context_set_gas_middleware(ctx, C.aa_gas_price_fn(C.aa_gas_zerodev))
+	case GasPimlico:
+		C.aa_context_set_gas_middleware(ctx, C.aa_gas_price_fn(C.aa_gas_pimlico))
 	default:
 		C.aa_context_destroy(ctx)
 		return nil, fmt.Errorf("unknown gas middleware: %d", gas)

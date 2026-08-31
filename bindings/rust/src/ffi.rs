@@ -129,6 +129,11 @@ extern "C" {
         out: *mut aa_gas_prices_t,
     ) -> aa_status;
 
+    pub(crate) fn aa_gas_pimlico(
+        ctx: *mut aa_context_t,
+        out: *mut aa_gas_prices_t,
+    ) -> aa_status;
+
     pub(crate) fn aa_paymaster_zerodev(
         ctx: *mut aa_context_t,
         userop_json: *const c_char,

@@ -94,6 +94,8 @@ public struct Authorization: Sendable {
 public enum GasMiddleware: Sendable {
     /// ZeroDev: calls zd_getUserOperationGasPrice.
     case zeroDev
+    /// Pimlico: calls pimlico_getUserOperationGasPrice.
+    case pimlico
 }
 
 /// Paymaster sponsorship middleware provider.

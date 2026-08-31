@@ -16,6 +16,7 @@ internal object NativeLib {
     ): Int
 
     @JvmStatic external fun nContextSetGasZeroDev(ctxPtr: Long): Int
+    @JvmStatic external fun nContextSetGasPimlico(ctxPtr: Long): Int
     @JvmStatic external fun nContextSetPaymasterZeroDev(ctxPtr: Long): Int
     @JvmStatic external fun nContextDestroy(ctxPtr: Long): Int
 

@@ -45,6 +45,8 @@ enum class KernelVersion(val code: Int) {
 enum class GasMiddleware {
     /** ZeroDev: calls zd_getUserOperationGasPrice. */
     ZERODEV,
+    /** Pimlico: calls pimlico_getUserOperationGasPrice. */
+    PIMLICO,
 }
 
 /** Paymaster sponsorship middleware provider. */

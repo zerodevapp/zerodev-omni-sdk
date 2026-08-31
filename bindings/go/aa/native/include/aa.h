@@ -173,6 +173,9 @@ aa_status aa_context_destroy(aa_context_t *ctx);
 /** ZeroDev gas price middleware. Calls zd_getUserOperationGasPrice. */
 aa_status aa_gas_zerodev(aa_context_t *ctx, aa_gas_prices_t *out);
 
+/** Pimlico gas price middleware. Calls pimlico_getUserOperationGasPrice. */
+aa_status aa_gas_pimlico(aa_context_t *ctx, aa_gas_prices_t *out);
+
 /** ZeroDev paymaster middleware. Calls pm_getPaymasterStubData / pm_getPaymasterData. */
 aa_status aa_paymaster_zerodev(aa_context_t *ctx,
                                 const char *userop_json,

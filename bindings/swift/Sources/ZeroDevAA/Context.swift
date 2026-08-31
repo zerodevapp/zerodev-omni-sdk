@@ -13,6 +13,8 @@ public final class Context: @unchecked Sendable {
         switch gasMiddleware {
         case .zeroDev:
             try checkResult(aa_context_set_gas_middleware(ptr, aa_gas_zerodev))
+        case .pimlico:
+            try checkResult(aa_context_set_gas_middleware(ptr, aa_gas_pimlico))
         }
 
         switch paymasterMiddleware {
