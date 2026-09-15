@@ -1727,7 +1727,11 @@ pub export fn aa_send_userop(
         user_op.paymaster_and_data = pm_packed_est;
 
         const final_hash = user_op.computeHash(entry_point, @as(u256, chain_id));
-        const final_sig = val.signUserOp(a, final_hash.bytes) catch {
+        // Stub for interactive signers here too: the paymaster signs over the
+        // UserOp excluding `signature`, so the account signature is a dummy in
+        // both phases — exactly as in the stub/estimate steps above. The single
+        // real ceremony happens once final paymaster data is installed (step 10).
+        const final_sig = estimationSignature(a, val, interactive, final_hash.bytes) catch {
             setLastError("signing for final paymaster failed", .{});
             return .sign_userop_failed;
         };

@@ -318,8 +318,17 @@ typedef int (*aa_webauthn_sign_fn)(void *user_ctx,
 /* Create a passkey-owned account. The credential is (pub_x, pub_y,
  * authenticator_id_hash); contract_version selects the WebAuthn validator
  * (0 = v0.0.1, 1 = v0.0.2, 2 = v0.0.3). The counterfactual address matches
- * @zerodev/sdk for the same inputs. Gas estimation uses a stub signature, so
- * the ceremony runs once, for the final signature. */
+ * @zerodev/sdk for the same inputs.
+ *
+ * The passkey ceremony runs exactly once per UserOp — for the final
+ * signature, after gas estimation and paymaster data are settled. Every
+ * earlier step (paymaster stub, gas estimate, paymaster final) carries the
+ * validator's dummy signature instead. This requires the paymaster
+ * middleware to accept a dummy account signature in both the stub and final
+ * phases; standard ERC-4337 paymasters, including aa_paymaster_zerodev, sign
+ * over the UserOp excluding `signature` and so do. A custom middleware that
+ * authenticates the account in the final phase is not supported with
+ * interactive signers. */
 aa_status aa_account_create_passkey(aa_context_t *ctx,
                                     aa_webauthn_sign_fn sign_fn,
                                     void *user_ctx,
