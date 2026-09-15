@@ -812,7 +812,13 @@ pub export fn aa_account_create(
     const c = ctx orelse return .null_context;
     const s = signer orelse return .invalid_signer;
 
-    const kv = KernelVersion.fromInt(@intCast(version)) orelse {
+    // Checked: `version` is a host-supplied c_int. A plain @intCast to u8 traps
+    // in safe builds and truncates in ReleaseFast (-256 becomes 0 → v3.3).
+    const version_u8 = std.math.cast(u8, version) orelse {
+        setLastError("invalid kernel version: {d}", .{version});
+        return .invalid_kernel_version;
+    };
+    const kv = KernelVersion.fromInt(version_u8) orelse {
         setLastError("invalid kernel version: {d}", .{version});
         return .invalid_kernel_version;
     };
@@ -855,7 +861,13 @@ pub export fn aa_context_new_account_7702(
     const c = ctx orelse return .null_context;
     const s = signer orelse return .invalid_signer;
 
-    const kv = KernelVersion.fromInt(@intCast(version)) orelse {
+    // Checked: `version` is a host-supplied c_int. A plain @intCast to u8 traps
+    // in safe builds and truncates in ReleaseFast (-256 becomes 0 → v3.3).
+    const version_u8 = std.math.cast(u8, version) orelse {
+        setLastError("invalid kernel version: {d}", .{version});
+        return .invalid_kernel_version;
+    };
+    const kv = KernelVersion.fromInt(version_u8) orelse {
         setLastError("invalid kernel version: {d}", .{version});
         return .invalid_kernel_version;
     };
@@ -908,7 +920,13 @@ pub export fn aa_account_create_passkey(
     const sfn = sign_fn orelse return .invalid_signer;
     if (pub_x == null or pub_y == null or authenticator_id_hash == null) return .null_out_ptr;
 
-    const kv = KernelVersion.fromInt(@intCast(version)) orelse {
+    // Checked: `version` is a host-supplied c_int. A plain @intCast to u8 traps
+    // in safe builds and truncates in ReleaseFast (-256 becomes 0 → v3.3).
+    const version_u8 = std.math.cast(u8, version) orelse {
+        setLastError("invalid kernel version: {d}", .{version});
+        return .invalid_kernel_version;
+    };
+    const kv = KernelVersion.fromInt(version_u8) orelse {
         setLastError("invalid kernel version: {d}", .{version});
         return .invalid_kernel_version;
     };
@@ -2087,4 +2105,62 @@ test "aa_account_create: non-nil address → sender = passed bytes" {
     // using the pinned bytes and not silently ignoring them.
     const counterfactual = try create2.getKernelAddress(acc.?.owner_address, 0, .v3_3);
     try testing.expect(!std.mem.eql(u8, &counterfactual.bytes, &pinned_bytes));
+}
+
+// ---- Kernel version is a host-supplied c_int; a bare @intCast would trap in
+// safe builds and truncate in ReleaseFast (-256 → 0 → accepted as v3.3). Each
+// constructor must reject out-of-range and unknown values with a status. ----
+
+fn testNeverCalledWebAuthnSign(_: ?*anyopaque, _: *const [32]u8, _: *CWebAuthnAssertion) callconv(.c) c_int {
+    return 1;
+}
+
+test "kernel version: aa_account_create rejects out-of-range and unknown values" {
+    const env = testCreateCtxAndSigner();
+    defer _ = aa_context_destroy(env.ctx);
+    defer aa_signer_destroy(env.signer);
+
+    var acc: ?*AccountImpl = null;
+    for ([_]c_int{ -1, -256, 256, 99 }) |bad| {
+        try testing.expectEqual(Status.invalid_kernel_version, aa_account_create(env.ctx, env.signer, bad, 0, null, &acc));
+        try testing.expect(acc == null);
+    }
+}
+
+test "kernel version: aa_context_new_account_7702 rejects out-of-range and unknown values" {
+    const env = testCreateCtxAndSigner();
+    defer _ = aa_context_destroy(env.ctx);
+    defer aa_signer_destroy(env.signer);
+
+    var acc: ?*AccountImpl = null;
+    for ([_]c_int{ -1, -256, 256, 99 }) |bad| {
+        try testing.expectEqual(Status.invalid_kernel_version, aa_context_new_account_7702(env.ctx, env.signer, bad, &acc));
+        try testing.expect(acc == null);
+    }
+}
+
+test "kernel version: aa_account_create_passkey rejects out-of-range and unknown values" {
+    const env = testCreateCtxAndSigner();
+    defer _ = aa_context_destroy(env.ctx);
+    defer aa_signer_destroy(env.signer);
+
+    const zeros = [_]u8{0} ** 32;
+    var acc: ?*AccountImpl = null;
+    for ([_]c_int{ -1, -256, 256, 99 }) |bad| {
+        const status = aa_account_create_passkey(
+            env.ctx,
+            testNeverCalledWebAuthnSign,
+            null,
+            &zeros,
+            &zeros,
+            &zeros,
+            1, // contract_version v0.0.2
+            11155111,
+            bad,
+            0,
+            &acc,
+        );
+        try testing.expectEqual(Status.invalid_kernel_version, status);
+        try testing.expect(acc == null);
+    }
 }
