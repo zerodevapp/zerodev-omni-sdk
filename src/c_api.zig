@@ -49,6 +49,15 @@ fn defaultAllocator() std.mem.Allocator {
     };
 }
 
+/// Slice a host-supplied (ptr, len) pair. NULL is only valid with len == 0.
+/// NULL with a non-zero length is a malformed call, not empty input — treating
+/// it as empty would, for example, hash empty calldata for a recovery approval
+/// the guardians meant to bind to a real operation.
+fn hostBytes(ptr: ?[*]const u8, len: usize) ?[]const u8 {
+    if (ptr) |p| return p[0..len];
+    return if (len == 0) &[_]u8{} else null;
+}
+
 // ---- Canonical libc allocator exports (audit F-02) ----
 //
 // Hosts that hand buffers back to the SDK across FFI (HTTP responses,
@@ -1095,7 +1104,11 @@ pub export fn aa_userop_build(
 
     // Convert C calls to kernel Executions and encode
     var arena = std.heap.ArenaAllocator.init(allocator);
-    errdefer arena.deinit();
+    // This fn returns a Status, not an error union, so `errdefer` would never
+    // fire. Free the arena on every early return; the success path hands it
+    // to UserOpImpl and marks it committed.
+    var committed = false;
+    defer if (!committed) arena.deinit();
     const a = arena.allocator();
 
     var execs = a.alloc(kernel_mod.Execution, calls_len) catch {
@@ -1107,10 +1120,10 @@ pub export fn aa_userop_build(
         const target = Address.fromBytes(c_call.target);
         const value: u256 = std.mem.readInt(u256, &c_call.value_be, .big);
 
-        var data: []const u8 = &[_]u8{};
-        if (c_call.calldata != null and c_call.calldata_len > 0) {
-            data = c_call.calldata.?[0..c_call.calldata_len];
-        }
+        const data = hostBytes(c_call.calldata, c_call.calldata_len) orelse {
+            setLastError("call {d}: calldata is NULL but calldata_len is {d}", .{ i, c_call.calldata_len });
+            return .null_out_ptr;
+        };
 
         execs[i] = .{
             .to = target,
@@ -1205,6 +1218,7 @@ pub export fn aa_userop_build(
         .authorization = eip7702_auth,
     };
 
+    committed = true;
     out.?.* = impl;
     return .ok;
 }
@@ -1521,10 +1535,10 @@ pub export fn aa_send_userop(
     var execs = a.alloc(kernel_mod.Execution, calls_len) catch return .out_of_memory;
     for (0..calls_len) |i| {
         const c_call = calls.?[i];
-        var data: []const u8 = &[_]u8{};
-        if (c_call.calldata != null and c_call.calldata_len > 0) {
-            data = c_call.calldata.?[0..c_call.calldata_len];
-        }
+        const data = hostBytes(c_call.calldata, c_call.calldata_len) orelse {
+            setLastError("call {d}: calldata is NULL but calldata_len is {d}", .{ i, c_call.calldata_len });
+            return .null_out_ptr;
+        };
         execs[i] = .{
             .to = Address.fromBytes(c_call.target),
             .value = std.mem.readInt(u256, &c_call.value_be, .big),
@@ -1617,7 +1631,10 @@ pub export fn aa_send_userop(
         defer if (pm_result.paymaster_data) |p| freePaymasterData(acc.context, p, pm_result.paymaster_data_len);
 
         const pm_addr = Address.fromBytes(pm_result.paymaster);
-        const pm_data: []const u8 = if (pm_result.paymaster_data) |p| p[0..pm_result.paymaster_data_len] else &[_]u8{};
+        const pm_data = hostBytes(pm_result.paymaster_data, pm_result.paymaster_data_len) orelse {
+            setLastError("paymaster middleware returned NULL paymaster_data with len {d}", .{pm_result.paymaster_data_len});
+            return .paymaster_failed;
+        };
 
         const pm_packed_stub = paymaster_mod.packPaymasterAndData(
             a,
@@ -1676,7 +1693,10 @@ pub export fn aa_send_userop(
         defer if (pm_result.paymaster_data) |p| freePaymasterData(acc.context, p, pm_result.paymaster_data_len);
 
         const pm_addr = Address.fromBytes(pm_result.paymaster);
-        const pm_data: []const u8 = if (pm_result.paymaster_data) |p| p[0..pm_result.paymaster_data_len] else &[_]u8{};
+        const pm_data = hostBytes(pm_result.paymaster_data, pm_result.paymaster_data_len) orelse {
+            setLastError("paymaster middleware returned NULL paymaster_data with len {d}", .{pm_result.paymaster_data_len});
+            return .paymaster_failed;
+        };
 
         const pm_packed_final = paymaster_mod.packPaymasterAndData(
             a,
@@ -1924,7 +1944,10 @@ pub export fn aa_recovery_hash(
     if (out == null or sender == null or nonce_be == null) return .null_out_ptr;
     var s: [20]u8 = undefined;
     @memcpy(&s, sender.?[0..20]);
-    const cd: []const u8 = if (call_data) |p| p[0..call_data_len] else &[_]u8{};
+    const cd = hostBytes(call_data, call_data_len) orelse {
+        setLastError("call_data is NULL but call_data_len is {d}", .{call_data_len});
+        return .null_out_ptr;
+    };
     const nonce = std.mem.readInt(u256, nonce_be.?[0..32], .big);
     const h = plugin.callDataAndNonceHash(defaultAllocator(), s, cd, nonce) catch {
         setLastError("failed to compute recovery hash", .{});
@@ -2012,7 +2035,10 @@ pub export fn aa_keccak256(
     out: ?[*]u8,
 ) callconv(.c) Status {
     if (out == null) return .null_out_ptr;
-    const bytes: []const u8 = if (data) |p| p[0..len] else &[_]u8{};
+    const bytes = hostBytes(data, len) orelse {
+        setLastError("data is NULL but len is {d}", .{len});
+        return .null_out_ptr;
+    };
     const h = keccak.hashBytes(bytes);
     @memcpy(out.?[0..32], &h);
     return .ok;
@@ -2032,7 +2058,10 @@ fn encodePluginCall(
     const allocator = defaultAllocator();
     var mod: [20]u8 = undefined;
     @memcpy(&mod, module.?[0..20]);
-    const vdata: []const u8 = if (validator_data) |p| p[0..validator_data_len] else &[_]u8{};
+    const vdata = hostBytes(validator_data, validator_data_len) orelse {
+        setLastError("validator_data is NULL but validator_data_len is {d}", .{validator_data_len});
+        return .null_out_ptr;
+    };
 
     const cd = (if (install)
         plugin.installValidatorCallData(allocator, mod, vdata)
@@ -2163,4 +2192,49 @@ test "kernel version: aa_account_create_passkey rejects out-of-range and unknown
         try testing.expectEqual(Status.invalid_kernel_version, status);
         try testing.expect(acc == null);
     }
+}
+
+// ---- NULL with a non-zero length must be rejected, never treated as empty. ----
+
+test "hostBytes: NULL is only valid with len == 0" {
+    try testing.expectEqual(@as(usize, 0), hostBytes(null, 0).?.len);
+    try testing.expect(hostBytes(null, 1) == null);
+    const buf = [_]u8{ 1, 2, 3 };
+    try testing.expectEqualSlices(u8, &buf, hostBytes(&buf, 3).?);
+}
+
+test "aa_recovery_hash rejects NULL call_data with non-zero length" {
+    const sender = [_]u8{0xaa} ** 20;
+    const nonce = [_]u8{0} ** 32;
+    var out: [32]u8 = undefined;
+    try testing.expectEqual(Status.null_out_ptr, aa_recovery_hash(&sender, null, 100, &nonce, &out));
+    // NULL with len 0 is genuinely empty calldata and still succeeds.
+    try testing.expectEqual(Status.ok, aa_recovery_hash(&sender, null, 0, &nonce, &out));
+}
+
+test "aa_keccak256 rejects NULL data with non-zero length" {
+    var out: [32]u8 = undefined;
+    try testing.expectEqual(Status.null_out_ptr, aa_keccak256(null, 5, &out));
+    try testing.expectEqual(Status.ok, aa_keccak256(null, 0, &out));
+}
+
+test "aa_userop_build rejects a call whose calldata is NULL with non-zero length" {
+    const env = testCreateCtxAndSigner();
+    defer _ = aa_context_destroy(env.ctx);
+    defer aa_signer_destroy(env.signer);
+
+    var acc: ?*AccountImpl = null;
+    try testing.expectEqual(Status.ok, aa_account_create(env.ctx, env.signer, 0, 0, null, &acc));
+    defer _ = aa_account_destroy(acc);
+
+    var op: ?*UserOpImpl = null;
+    const bad = [_]CCall{.{ .target = [_]u8{0xaa} ** 20, .value_be = [_]u8{0} ** 32, .calldata = null, .calldata_len = 5 }};
+    try testing.expectEqual(Status.null_out_ptr, aa_userop_build(acc, &bad, 1, &op));
+    try testing.expect(op == null);
+
+    // Control: NULL with len 0 is an empty call and builds offline for CREATE2.
+    const ok = [_]CCall{.{ .target = [_]u8{0xaa} ** 20, .value_be = [_]u8{0} ** 32, .calldata = null, .calldata_len = 0 }};
+    try testing.expectEqual(Status.ok, aa_userop_build(acc, &ok, 1, &op));
+    defer _ = aa_userop_destroy(op);
+    try testing.expect(op != null);
 }
