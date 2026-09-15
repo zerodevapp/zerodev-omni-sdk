@@ -170,10 +170,14 @@ fn parseAndNormalizeSig(der: []const u8) !RS {
     // so the length fields are always single-byte short-form.
     if (der.len < 8 or der[0] != 0x30) return error.BadDer;
     if (der[1] & 0x80 != 0) return error.BadDer; // long-form length not expected
+    // The SEQUENCE length must account for exactly the remaining bytes.
+    if (der[1] != der.len - 2) return error.BadDer;
     var i: usize = 2;
 
     const r = try readDerInt(der, &i);
     const s_raw = try readDerInt(der, &i);
+    // Both INTEGERs must consume the whole SEQUENCE — no trailing bytes.
+    if (i != der.len) return error.BadDer;
 
     // A valid P-256 signature has 1 <= r,s < N. Reject zero or out-of-range
     // scalars up front: they are malformed, and passing them on would just be
@@ -187,9 +191,18 @@ fn parseAndNormalizeSig(der: []const u8) !RS {
 fn readDerInt(der: []const u8, i: *usize) !u256 {
     if (i.* + 2 > der.len or der[i.*] != 0x02) return error.BadDer;
     const len = der[i.* + 1];
+    // Short-form length only, and an INTEGER always has at least one byte.
+    if (len & 0x80 != 0 or len == 0) return error.BadDer;
     const start = i.* + 2;
     const end = start + len;
     if (end > der.len) return error.BadDer;
+    const first = der[start];
+    // DER INTEGER is two's complement: a set high bit means negative, which is
+    // never valid for r or s.
+    if (first & 0x80 != 0) return error.BadDer;
+    // Minimal encoding: a leading 0x00 is only permitted to keep a value with
+    // its high bit set positive. 0x00 followed by a clear high bit is padding.
+    if (len > 1 and first == 0x00 and der[start + 1] & 0x80 == 0) return error.BadDer;
     i.* = end;
     return beToU256(der[start..end]);
 }
@@ -242,6 +255,28 @@ const STUB_SIGNATURE = hexConst(STUB_HEX);
 // @zerodev/webauthn-key (via viem/noble oracles).
 
 const testing = std.testing;
+
+test "parseAndNormalizeSig rejects encodings that are not DER" {
+    // Empty SEQUENCE followed by two INTEGERs: declared length is 0, not 6.
+    const empty_seq = hexConst("3000020101020101");
+    try testing.expectError(error.BadDer, parseAndNormalizeSig(&empty_seq));
+
+    // r has its high bit set — a negative INTEGER.
+    const negative_r = hexConst("3006020180020101");
+    try testing.expectError(error.BadDer, parseAndNormalizeSig(&negative_r));
+
+    // Non-minimal r: 0x00 padding in front of a byte with a clear high bit.
+    const padded_r = hexConst("300702020001020101");
+    try testing.expectError(error.BadDer, parseAndNormalizeSig(&padded_r));
+
+    // A trailing byte inside the declared SEQUENCE after s.
+    const trailing = hexConst("300702010102010100");
+    try testing.expectError(error.BadDer, parseAndNormalizeSig(&trailing));
+
+    // Zero-length INTEGER for r.
+    const empty_int = hexConst("3006020002010100");
+    try testing.expectError(error.BadDer, parseAndNormalizeSig(&empty_int));
+}
 
 test "validator address (v0.0.2, kernel v3)" {
     const addr = validatorAddress(.v0_0_2);
