@@ -309,6 +309,22 @@ pub fn build(b: *std.Build) void {
     const live_capi_step = b.step("test-live-capi", "Run C API live tests against ZeroDev Sepolia");
     live_capi_step.dependOn(&run_live_capi_tests.step);
 
+    const live_passkey_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/e2e/live_passkey.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "c_api", .module = c_api_test_mod },
+            },
+        }),
+    });
+    const run_live_passkey_tests = b.addRunArtifact(live_passkey_tests);
+
+    const live_passkey_step = b.step("test-live-passkey", "Run passkey (software authenticator) live test against ZeroDev Sepolia");
+    live_passkey_step.dependOn(&run_live_passkey_tests.step);
+
     const live_7702_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/e2e/live_7702.zig"),
@@ -333,4 +349,5 @@ pub fn build(b: *std.Build) void {
     compile_tests_step.dependOn(&live_tests.step);
     compile_tests_step.dependOn(&live_capi_tests.step);
     compile_tests_step.dependOn(&live_7702_tests.step);
+    compile_tests_step.dependOn(&live_passkey_tests.step);
 }
