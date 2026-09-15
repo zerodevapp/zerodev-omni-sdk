@@ -317,8 +317,12 @@ typedef int (*aa_webauthn_sign_fn)(void *user_ctx,
 
 /* Create a passkey-owned account. The credential is (pub_x, pub_y,
  * authenticator_id_hash); contract_version selects the WebAuthn validator
- * (0 = v0.0.1, 1 = v0.0.2, 2 = v0.0.3). The counterfactual address matches
- * @zerodev/sdk for the same inputs.
+ * (0 = v0.0.1, 1 = v0.0.2, 2 = v0.0.3). Use 2. Versions 0 and 1 are superseded
+ * and ZeroDev's paymaster refuses to sponsor UserOps that reference them
+ * (pm_getPaymasterStubData fails with "Unauthorized: wapk") unless the op
+ * migrates to v0.0.3; they remain selectable only so an existing account on
+ * one of them can be migrated via aa_encode_change_root_validator. The
+ * counterfactual address matches @zerodev/sdk for the same inputs.
  *
  * The passkey ceremony runs exactly once per UserOp — for the final
  * signature, after gas estimation and paymaster data are settled. Every

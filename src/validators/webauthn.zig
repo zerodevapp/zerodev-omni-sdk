@@ -17,15 +17,22 @@ const SignError = @import("Validator.zig").SignError;
 const P256_N: u256 = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551;
 
 /// WebAuthn validator contract, by on-chain contract version (Kernel v3.x).
+///
+/// Use `.v0_0_3` for new accounts. `.v0_0_1` and `.v0_0_2` are superseded:
+/// ZeroDev's paymaster lists both as vulnerable (patched by v0.0.3) and refuses
+/// to sponsor UserOps that reference them — `pm_getPaymasterStubData` fails
+/// with "Unauthorized: wapk" — unless the op migrates to the patched validator.
+/// They stay selectable only so an existing account on one of them can be
+/// operated long enough to `changeRootValidator` to v0.0.3.
 pub const ContractVersion = enum { v0_0_1, v0_0_2, v0_0_3 };
 
 pub fn validatorAddress(version: ContractVersion) [20]u8 {
     return switch (version) {
-        // 0xD990393C670dCcE8b4d8F858FB98c9912dBFAa06
+        // 0xD990393C670dCcE8b4d8F858FB98c9912dBFAa06 — superseded, paymaster-blocked
         .v0_0_1 => .{ 0xD9, 0x90, 0x39, 0x3C, 0x67, 0x0d, 0xCc, 0xE8, 0xb4, 0xd8, 0xF8, 0x58, 0xFB, 0x98, 0xc9, 0x91, 0x2d, 0xBF, 0xAa, 0x06 },
-        // 0xbA45a2BFb8De3D24cA9D7F1B551E14dFF5d690Fd
+        // 0xbA45a2BFb8De3D24cA9D7F1B551E14dFF5d690Fd — superseded, paymaster-blocked
         .v0_0_2 => .{ 0xbA, 0x45, 0xa2, 0xBF, 0xb8, 0xDe, 0x3D, 0x24, 0xcA, 0x9D, 0x7F, 0x1B, 0x55, 0x1E, 0x14, 0xdF, 0xF5, 0xd6, 0x90, 0xFd },
-        // 0x7ab16Ff354AcB328452F1D445b3Ddee9a91e9e69
+        // 0x7ab16Ff354AcB328452F1D445b3Ddee9a91e9e69 — current; patched target for both above
         .v0_0_3 => .{ 0x7a, 0xb1, 0x6F, 0xf3, 0x54, 0xAc, 0xB3, 0x28, 0x45, 0x2F, 0x1D, 0x44, 0x5b, 0x3D, 0xde, 0xe9, 0xa9, 0x1e, 0x9e, 0x69 },
     };
 }
@@ -276,6 +283,16 @@ test "parseAndNormalizeSig rejects encodings that are not DER" {
     // Zero-length INTEGER for r.
     const empty_int = hexConst("3006020002010100");
     try testing.expectError(error.BadDer, parseAndNormalizeSig(&empty_int));
+}
+
+test "validator address (v0.0.3 is the current, paymaster-accepted version)" {
+    // ZeroDev's paymaster maps both v0.0.1 and v0.0.2 to this address as their
+    // patched replacement; the live passkey test sponsors against it.
+    const addr = validatorAddress(.v0_0_3);
+    const expected = hexConst("7ab16Ff354AcB328452F1D445b3Ddee9a91e9e69");
+    try testing.expectEqualSlices(u8, &expected, &addr);
+    try testing.expect(!std.mem.eql(u8, &addr, &validatorAddress(.v0_0_2)));
+    try testing.expect(!std.mem.eql(u8, &addr, &validatorAddress(.v0_0_1)));
 }
 
 test "validator address (v0.0.2, kernel v3)" {

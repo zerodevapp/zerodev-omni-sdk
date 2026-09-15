@@ -959,7 +959,8 @@ pub export fn aa_context_new_account_7702(
 /// Create a passkey (WebAuthn) owned account. The account is owned by the
 /// credential (pub_x, pub_y, authenticator_id_hash); sign_fn runs the ceremony
 /// on the host. contract_version selects the WebAuthn validator (0=v0.0.1,
-/// 1=v0.0.2, 2=v0.0.3). The counterfactual address matches @zerodev/sdk.
+/// 1=v0.0.2, 2=v0.0.3) — use 2; see webauthn.ContractVersion for why 0 and 1
+/// are paymaster-blocked. The counterfactual address matches @zerodev/sdk.
 pub export fn aa_account_create_passkey(
     ctx: ?*ContextImpl,
     sign_fn: ?WebAuthnSignFn,

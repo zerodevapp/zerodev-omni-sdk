@@ -18,8 +18,15 @@ const abi = @import("abi");
 const Validator = @import("Validator.zig").Validator;
 const SignError = @import("Validator.zig").SignError;
 
-/// WeightedECDSAValidator contract for Kernel v3 (0.3.0 || 0.3.1).
-/// 0xeD89244160CfE273800B58b1B534031699dFeEEE
+/// WeightedECDSAValidator contract. 0xeD89244160CfE273800B58b1B534031699dFeEEE
+///
+/// This is @zerodev/weighted-ecdsa-validator's mapping for Kernel 0.3.0 || 0.3.1;
+/// that package (5.4.x) has no entry for 0.3.3, which is the only Kernel this SDK
+/// builds. ZeroDev's paymaster blocklist also references a different weighted
+/// validator lineage (0x2E29537b… patched by 0x144F02c1…), so the intended
+/// address for Kernel v3.3 accounts should be confirmed with ZeroDev before this
+/// is relied on in production. Enable-data encoding is unaffected by which
+/// address is installed.
 pub const WEIGHTED_VALIDATOR_ADDR = [20]u8{
     0xeD, 0x89, 0x24, 0x41, 0x60, 0xCf, 0xE2, 0x73, 0x80, 0x0B,
     0x58, 0xb1, 0xB5, 0x34, 0x03, 0x16, 0x99, 0xdF, 0xeE, 0xEE,
