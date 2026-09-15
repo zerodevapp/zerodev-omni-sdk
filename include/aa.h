@@ -289,8 +289,17 @@ aa_status aa_account_destroy(aa_account_t *account);
 
 /* ---- Passkey (WebAuthn) owned account ---- */
 
-/* The assertion the host fills after running the passkey ceremony. Its buffers
- * need only remain valid until the sign callback returns. */
+/* The assertion the host fills after running the passkey ceremony.
+ *
+ * Ownership (the same contract as aa_http_fn responses and paymaster_data):
+ * on a 0 return all three buffers become the SDK's. It copies them, then
+ * frees each with libc free — so allocate them with aa_alloc (or libc
+ * malloc) — or register a matching callback via aa_context_set_webauthn_free_fn
+ * if your runtime cannot hand out libc pointers. Each field must be its own
+ * independently freeable allocation: never carve three fields out of one
+ * block, never alias. On a non-zero return the SDK does not read or free
+ * `out`; the host keeps ownership of anything it allocated. NULL is valid
+ * only with a zero length, and a zero-length field is a malformed assertion. */
 typedef struct {
     const uint8_t *authenticator_data;
     size_t authenticator_data_len;
@@ -322,6 +331,14 @@ aa_status aa_account_create_passkey(aa_context_t *ctx,
                                     aa_kernel_version version,
                                     uint32_t index,
                                     aa_account_t **out);
+
+/* Optional companion to aa_webauthn_sign_fn. If registered, the SDK releases
+ * each assertion buffer through this instead of libc free. Receives the
+ * user_ctx the sign callback was registered with. Pass NULL to clear. */
+typedef void (*aa_webauthn_free_fn)(void *user_ctx, uint8_t *buf, size_t len);
+
+aa_status aa_context_set_webauthn_free_fn(aa_context_t *ctx,
+                                           aa_webauthn_free_fn free_fn);
 
 /* ---- High-level: full pipeline ---- */
 
@@ -392,11 +409,13 @@ aa_status aa_wait_for_user_operation_receipt(
  * account itself. Every heap buffer returned here must be freed with aa_free. */
 
 /* Passkey (WebAuthn) enable-data: abi.encode((uint256 x, uint256 y),
- * bytes32 authenticatorIdHash). Writes exactly 96 bytes into out. */
+ * bytes32 authenticatorIdHash). *out is heap-allocated (always 96 bytes);
+ * free it with aa_free. */
 aa_status aa_encode_webauthn_enable_data(const uint8_t pub_x[32],
                                          const uint8_t pub_y[32],
                                          const uint8_t authenticator_id_hash[32],
-                                         uint8_t *out);
+                                         uint8_t **out,
+                                         size_t *out_len);
 
 /* Weighted-ECDSA (guardians) enable-data: abi.encode(address[] guardians,
  * uint24[] weights, uint24 threshold, uint48 delay). guardians is count*20

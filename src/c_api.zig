@@ -202,6 +202,7 @@ pub const ContextImpl = struct {
     http_fn: ?transport.HttpFn = null,
     http_ctx: ?*anyopaque = null,
     http_free_fn: ?transport.HttpFreeFn = null,
+    webauthn_free_fn: ?WebAuthnFreeFn = null,
 };
 
 /// Copy the host HTTP transport config from a context onto a fresh Client.
@@ -402,6 +403,17 @@ pub export fn aa_context_set_http_transport(
 /// Audit F-02. Register a free function for response buffers returned by
 /// the HTTP transport. Pass NULL to clear (the SDK then frees with libc
 /// free — safe only when the host allocates via `aa_alloc` or libc malloc).
+/// Register a free function for the buffers a passkey sign callback returns.
+/// NULL clears it; the SDK then frees with libc free (safe for aa_alloc).
+pub export fn aa_context_set_webauthn_free_fn(
+    ctx: ?*ContextImpl,
+    free_fn: ?WebAuthnFreeFn,
+) callconv(.c) Status {
+    const c = ctx orelse return .null_context;
+    c.webauthn_free_fn = free_fn;
+    return .ok;
+}
+
 pub export fn aa_context_set_http_free_fn(
     ctx: ?*ContextImpl,
     free_fn: ?transport.HttpFreeFn,
@@ -691,7 +703,15 @@ pub const AA_KERNEL_V3_3: c_int = 0;
 pub const KERNEL_V3_3_DELEGATION_TARGET: [20]u8 = core.KERNEL_V3_3_DELEGATION_TARGET;
 
 /// C-visible WebAuthn assertion the host fills after running the passkey
-/// ceremony. Its buffers need only stay valid until the sign callback returns.
+/// ceremony.
+///
+/// Ownership follows the F-02 contract used by HttpFn and paymaster_data: on a
+/// 0 return all three buffers become the SDK's. It copies them, then frees each
+/// via libc free — so the host allocates with `aa_alloc` / libc malloc — or via
+/// the callback registered with `aa_context_set_webauthn_free_fn`. Each field
+/// must be an independently freeable allocation (never three fields carved from
+/// one block, never aliased). On a non-zero return the SDK does not read or free
+/// `out`; the host keeps ownership of anything it allocated.
 pub const CWebAuthnAssertion = extern struct {
     authenticator_data: ?[*]const u8,
     authenticator_data_len: usize,
@@ -705,11 +725,18 @@ pub const CWebAuthnAssertion = extern struct {
 /// (the UserOp hash) and fills the assertion. Returns 0 on success.
 pub const WebAuthnSignFn = *const fn (?*anyopaque, *const [32]u8, *CWebAuthnAssertion) callconv(.c) c_int;
 
+/// Optional free callback for the buffers a WebAuthn sign callback hands back.
+/// Same shape as HttpFreeFn / PaymasterFreeFn: receives the sign callback's
+/// user_ctx. NULL (unregistered) means the host used aa_alloc / libc malloc and
+/// the SDK frees with libc free.
+pub const WebAuthnFreeFn = *const fn (?*anyopaque, [*]u8, usize) callconv(.c) void;
+
 /// Bridges the host's passkey callback to the WebAuthn validator's signer. Held
 /// at a stable address inside AccountImpl so the validator can point at it.
 pub const PasskeyBridge = struct {
     sign_fn: WebAuthnSignFn,
     user_ctx: ?*anyopaque,
+    context: *ContextImpl,
 
     pub fn webAuthnSigner(self: *PasskeyBridge) webauthn.WebAuthnSigner {
         return .{ .ptr = @ptrCast(self), .signFn = signImpl };
@@ -717,17 +744,39 @@ pub const PasskeyBridge = struct {
 
     fn signImpl(ptr: *anyopaque, allocator: std.mem.Allocator, challenge: [32]u8) SignError!webauthn.Assertion {
         const self: *PasskeyBridge = @ptrCast(@alignCast(ptr));
-        var out: CWebAuthnAssertion = undefined;
+        // Zero-initialised so a callback that leaves a field untouched cannot
+        // hand us an arbitrary pointer to free.
+        var out: CWebAuthnAssertion = std.mem.zeroes(CWebAuthnAssertion);
         if (self.sign_fn(self.user_ctx, &challenge, &out) != 0) return SignError.SigningFailed;
-        // Copy the host's buffers into the arena — they may only live for the call.
-        const ad = out.authenticator_data orelse return SignError.SigningFailed;
-        const cd = out.client_data_json orelse return SignError.SigningFailed;
-        const der = out.der_signature orelse return SignError.SigningFailed;
+
+        // Ownership of all three host buffers transferred to us on the 0 return.
+        // Register the frees BEFORE validating or copying, so a malformed field
+        // or a failed dupe cannot leak the others.
+        defer self.freeHostBuf(out.authenticator_data, out.authenticator_data_len);
+        defer self.freeHostBuf(out.client_data_json, out.client_data_json_len);
+        defer self.freeHostBuf(out.der_signature, out.der_signature_len);
+
+        const ad = hostBytes(out.authenticator_data, out.authenticator_data_len) orelse return SignError.SigningFailed;
+        const cd = hostBytes(out.client_data_json, out.client_data_json_len) orelse return SignError.SigningFailed;
+        const der = hostBytes(out.der_signature, out.der_signature_len) orelse return SignError.SigningFailed;
+        // An assertion with an empty component is malformed.
+        if (ad.len == 0 or cd.len == 0 or der.len == 0) return SignError.SigningFailed;
+
         return .{
-            .authenticator_data = try allocator.dupe(u8, ad[0..out.authenticator_data_len]),
-            .client_data_json = try allocator.dupe(u8, cd[0..out.client_data_json_len]),
-            .der_signature = try allocator.dupe(u8, der[0..out.der_signature_len]),
+            .authenticator_data = try allocator.dupe(u8, ad),
+            .client_data_json = try allocator.dupe(u8, cd),
+            .der_signature = try allocator.dupe(u8, der),
         };
+    }
+
+    fn freeHostBuf(self: *PasskeyBridge, ptr: ?[*]const u8, len: usize) void {
+        const p = ptr orelse return;
+        const mut: [*]u8 = @constCast(p);
+        if (self.context.webauthn_free_fn) |free_fn| {
+            free_fn(self.user_ctx, mut, len);
+        } else {
+            std.c.free(mut);
+        }
     }
 };
 
@@ -960,7 +1009,7 @@ pub export fn aa_account_create_passkey(
     // Place the bridge at its final (heap) address first, then build the
     // validator pointing at it.
     impl.validator_kind = .{ .webauthn = .{
-        .bridge = .{ .sign_fn = sfn, .user_ctx = user_ctx },
+        .bridge = .{ .sign_fn = sfn, .user_ctx = user_ctx, .context = c },
         .validator = undefined,
     } };
     impl.validator_kind.webauthn.validator = webauthn.WebAuthnValidator.init(
@@ -1846,15 +1895,21 @@ pub export fn aa_encode_webauthn_enable_data(
     pub_x: ?[*]const u8,
     pub_y: ?[*]const u8,
     authenticator_id_hash: ?[*]const u8,
-    out: ?[*]u8,
+    out: ?*[*]u8,
+    out_len: ?*usize,
 ) callconv(.c) Status {
-    if (pub_x == null or pub_y == null or authenticator_id_hash == null or out == null) return .null_out_ptr;
+    if (out == null or out_len == null) return .null_out_ptr;
+    if (pub_x == null or pub_y == null or authenticator_id_hash == null) return .null_out_ptr;
     const x = std.mem.readInt(u256, pub_x.?[0..32], .big);
     const y = std.mem.readInt(u256, pub_y.?[0..32], .big);
     var hash: [32]u8 = undefined;
     @memcpy(&hash, authenticator_id_hash.?[0..32]);
     const enable = webauthn.WebAuthnValidator.encodeEnableData(x, y, hash);
-    @memcpy(out.?[0..96], &enable);
+    // Allocated output like every sibling encoder — the caller frees with
+    // aa_free — rather than trusting an unsized caller buffer.
+    const buf = defaultAllocator().dupe(u8, &enable) catch return .out_of_memory;
+    out.?.* = buf.ptr;
+    out_len.?.* = buf.len;
     return .ok;
 }
 
@@ -2287,4 +2342,123 @@ test "aa_userop_build: passkey account gets WebAuthn initCode and stub, not ECDS
     // Stub is the WebAuthn dummy, not 65 zero bytes.
     try testing.expectEqualSlices(u8, acc.?.getValidator().getStubSignature(), o.signature);
     try testing.expect(o.signature.len != 65);
+}
+
+// ---- Passkey bridge ownership: host buffers are ours on a 0 return and must
+// be freed exactly once, even when validation or copying fails. ----
+
+const TestPasskey = struct {
+    mode: enum { ok, missing_der, refuse },
+    frees: usize = 0,
+
+    const cdj = "{\"type\":\"webauthn.get\",\"challenge\":\"AA\"}";
+    const auth_data = [_]u8{ 1, 2, 3, 4 };
+    // (r, high-S) vector shared with webauthn.zig's tests; valid strict DER.
+    const der_hex = "304502201234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef022100f012345e6789abcef012345f6789abcdacf92f0d0ea14a52e3cbff2263ecd11f";
+
+    fn allocCopy(bytes: []const u8) ?[*]const u8 {
+        const p: [*]u8 = @ptrCast(aa_alloc(bytes.len) orelse return null);
+        @memcpy(p[0..bytes.len], bytes);
+        return p;
+    }
+
+    fn sign(user_ctx: ?*anyopaque, _: *const [32]u8, out: *CWebAuthnAssertion) callconv(.c) c_int {
+        const self: *TestPasskey = @ptrCast(@alignCast(user_ctx.?));
+        if (self.mode == .refuse) return 1;
+        out.authenticator_data = allocCopy(&auth_data) orelse return 1;
+        out.authenticator_data_len = auth_data.len;
+        out.client_data_json = allocCopy(cdj) orelse return 1;
+        out.client_data_json_len = cdj.len;
+        if (self.mode == .missing_der) {
+            // Malformed: NULL with a non-zero length. The two buffers above are
+            // already the SDK's and must still be freed.
+            out.der_signature = null;
+            out.der_signature_len = 71;
+            return 0;
+        }
+        var der_buf: [71]u8 = undefined;
+        const der = std.fmt.hexToBytes(&der_buf, der_hex) catch return 1;
+        out.der_signature = allocCopy(der) orelse return 1;
+        out.der_signature_len = der.len;
+        return 0;
+    }
+
+    fn free(user_ctx: ?*anyopaque, buf: [*]u8, _: usize) callconv(.c) void {
+        const self: *TestPasskey = @ptrCast(@alignCast(user_ctx.?));
+        self.frees += 1;
+        std.c.free(buf);
+    }
+};
+
+fn testPasskeyAccount(ctx: *ContextImpl, pk: *TestPasskey) !*AccountImpl {
+    try testing.expectEqual(Status.ok, aa_context_set_webauthn_free_fn(ctx, TestPasskey.free));
+    var x = [_]u8{0} ** 32;
+    x[31] = 1;
+    var y = [_]u8{0} ** 32;
+    y[31] = 2;
+    const id_hash = [_]u8{0} ** 32;
+    var acc: ?*AccountImpl = null;
+    try testing.expectEqual(Status.ok, aa_account_create_passkey(
+        ctx, TestPasskey.sign, pk, &x, &y, &id_hash, 1, 11155111, 0, 0, &acc,
+    ));
+    return acc.?;
+}
+
+test "passkey bridge: success frees all three host buffers exactly once" {
+    const env = testCreateCtxAndSigner();
+    defer _ = aa_context_destroy(env.ctx);
+    defer aa_signer_destroy(env.signer);
+    var pk = TestPasskey{ .mode = .ok };
+    const acc = try testPasskeyAccount(env.ctx, &pk);
+    defer _ = aa_account_destroy(acc);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const sig = try acc.getValidator().signUserOp(arena.allocator(), [_]u8{0xab} ** 32);
+    try testing.expect(sig.len > 65); // ABI-encoded WebAuthn assertion, not ECDSA
+    try testing.expectEqual(@as(usize, 3), pk.frees);
+}
+
+test "passkey bridge: a malformed field still frees the buffers that were handed over" {
+    const env = testCreateCtxAndSigner();
+    defer _ = aa_context_destroy(env.ctx);
+    defer aa_signer_destroy(env.signer);
+    var pk = TestPasskey{ .mode = .missing_der };
+    const acc = try testPasskeyAccount(env.ctx, &pk);
+    defer _ = aa_account_destroy(acc);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    try testing.expectError(SignError.SigningFailed, acc.getValidator().signUserOp(arena.allocator(), [_]u8{0xab} ** 32));
+    try testing.expectEqual(@as(usize, 2), pk.frees);
+}
+
+test "passkey bridge: a non-zero return frees nothing (host keeps ownership)" {
+    const env = testCreateCtxAndSigner();
+    defer _ = aa_context_destroy(env.ctx);
+    defer aa_signer_destroy(env.signer);
+    var pk = TestPasskey{ .mode = .refuse };
+    const acc = try testPasskeyAccount(env.ctx, &pk);
+    defer _ = aa_account_destroy(acc);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    try testing.expectError(SignError.SigningFailed, acc.getValidator().signUserOp(arena.allocator(), [_]u8{0xab} ** 32));
+    try testing.expectEqual(@as(usize, 0), pk.frees);
+}
+
+test "aa_encode_webauthn_enable_data returns a 96-byte aa_free-owned buffer" {
+    var x = [_]u8{0} ** 32;
+    x[31] = 1;
+    var y = [_]u8{0} ** 32;
+    y[31] = 2;
+    var id_hash = [_]u8{0} ** 32;
+    id_hash[0] = 0xcc;
+    var out: [*]u8 = undefined;
+    var out_len: usize = 0;
+    try testing.expectEqual(Status.ok, aa_encode_webauthn_enable_data(&x, &y, &id_hash, &out, &out_len));
+    defer aa_free(out);
+    try testing.expectEqual(@as(usize, 96), out_len);
+    const expected = webauthn.WebAuthnValidator.encodeEnableData(1, 2, id_hash);
+    try testing.expectEqualSlices(u8, &expected, out[0..out_len]);
 }
