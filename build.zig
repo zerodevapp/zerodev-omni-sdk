@@ -288,6 +288,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "primitives", .module = primitives_mod },
             .{ .name = "transport", .module = transport_mod },
             .{ .name = "signers", .module = signers_mod },
+            .{ .name = "abi", .module = abi_mod },
+            .{ .name = "plugin", .module = plugin_mod },
         },
     });
 
@@ -322,4 +324,13 @@ pub fn build(b: *std.Build) void {
 
     const live_7702_step = b.step("test-live-7702", "Run EIP-7702 live tests against ZeroDev Sepolia");
     live_7702_step.dependOn(&run_live_7702_tests.step);
+
+    // Compile (but do not run) every network-dependent test target, so the
+    // Validator.signUserOp signature and module wiring are checked in CI
+    // without Anvil or Sepolia. The test-e2e / test-live* steps still run.
+    const compile_tests_step = b.step("compile-tests", "Compile e2e/live test binaries without running them");
+    compile_tests_step.dependOn(&e2e_tests.step);
+    compile_tests_step.dependOn(&live_tests.step);
+    compile_tests_step.dependOn(&live_capi_tests.step);
+    compile_tests_step.dependOn(&live_7702_tests.step);
 }

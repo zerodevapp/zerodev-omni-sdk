@@ -209,8 +209,9 @@ test "live: sponsored UserOp via ZeroDev paymaster" {
 
     // Sign with current gas values for estimation
     const stub_hash = user_op.computeHash(entry_point, @as(u256, chain_id));
-    const stub_sig = try val.signUserOp(stub_hash.bytes);
-    const stub_json = try user_op.toJsonValue(allocator, &stub_sig);
+    const stub_sig = try val.signUserOp(allocator, stub_hash.bytes);
+    defer allocator.free(stub_sig);
+    const stub_json = try user_op.toJsonValue(allocator, stub_sig);
     defer json_rpc.freeValue(allocator, stub_json);
 
     const pm_stub = try paymaster_mod.getPaymasterStubData(&rpc, allocator, stub_json, core.ENTRY_POINT_V07, chain_id);
@@ -233,8 +234,9 @@ test "live: sponsored UserOp via ZeroDev paymaster" {
 
     // Step 6: Estimate gas with paymaster stub
     const est_hash = user_op.computeHash(entry_point, @as(u256, chain_id));
-    const est_sig = try val.signUserOp(est_hash.bytes);
-    const est_json = try user_op.toJsonValue(allocator, &est_sig);
+    const est_sig = try val.signUserOp(allocator, est_hash.bytes);
+    defer allocator.free(est_sig);
+    const est_json = try user_op.toJsonValue(allocator, est_sig);
     defer json_rpc.freeValue(allocator, est_json);
 
     const gas = try bundler_mod.estimateUserOperationGas(&rpc, allocator, est_json, core.ENTRY_POINT_V07);
@@ -265,8 +267,9 @@ test "live: sponsored UserOp via ZeroDev paymaster" {
 
     // Step 8: Get final paymaster data (paymaster signs over the final gas values)
     const final_pm_hash = user_op.computeHash(entry_point, @as(u256, chain_id));
-    const final_pm_sig = try val.signUserOp(final_pm_hash.bytes);
-    const final_pm_json = try user_op.toJsonValue(allocator, &final_pm_sig);
+    const final_pm_sig = try val.signUserOp(allocator, final_pm_hash.bytes);
+    defer allocator.free(final_pm_sig);
+    const final_pm_json = try user_op.toJsonValue(allocator, final_pm_sig);
     defer json_rpc.freeValue(allocator, final_pm_json);
 
     const pm_final = try paymaster_mod.getPaymasterData(&rpc, allocator, final_pm_json, core.ENTRY_POINT_V07, chain_id);
@@ -286,12 +289,13 @@ test "live: sponsored UserOp via ZeroDev paymaster" {
 
     // Step 9: Final hash and sign
     const op_hash = user_op.computeHash(entry_point, @as(u256, chain_id));
-    const real_sig = try val.signUserOp(op_hash.bytes);
+    const real_sig = try val.signUserOp(allocator, op_hash.bytes);
+    defer allocator.free(real_sig);
     const hash_hex = fmtHash(&op_hash.bytes);
     std.log.info("Step 9: Signed, hash: 0x{s}", .{&hash_hex});
 
     // Step 10: Send
-    const send_json = try user_op.toJsonValue(allocator, &real_sig);
+    const send_json = try user_op.toJsonValue(allocator, real_sig);
     defer json_rpc.freeValue(allocator, send_json);
 
     const op_hash_hex = try bundler_mod.sendUserOperation(&rpc, allocator, send_json, core.ENTRY_POINT_V07);
