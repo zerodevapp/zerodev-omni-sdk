@@ -249,7 +249,8 @@ test "e2e: build, hash, and sign UserOp" {
 
     // Sign with ECDSA validator
     var val = ecdsa.validator();
-    const sig = try val.signUserOp(hash.bytes);
+    const sig = try val.signUserOp(allocator, hash.bytes);
+    defer allocator.free(sig);
 
     try std.testing.expectEqual(@as(usize, 65), sig.len);
     var sig_nonzero = false;
@@ -349,10 +350,11 @@ test "e2e: estimate gas for UserOp via bundler" {
     const chain_id_str = getEnvOr("E2E_CHAIN_ID", "8453");
     const chain_id = try std.fmt.parseInt(u64, chain_id_str, 10);
     const hash = user_op.computeHash(entry_point, @as(u256, chain_id));
-    const sig = try val.signUserOp(hash.bytes);
+    const sig = try val.signUserOp(allocator, hash.bytes);
+    defer allocator.free(sig);
 
     // Serialize to JSON
-    const userop_json = try user_op.toJsonValue(allocator, &sig);
+    const userop_json = try user_op.toJsonValue(allocator, sig);
     defer json_rpc.freeValue(allocator, userop_json);
 
     // Estimate gas
@@ -438,10 +440,11 @@ test "e2e: full pipeline — build, estimate, sign, send UserOp" {
     const entry_point = try Address.fromHex(core.ENTRY_POINT_V07);
     var val = ecdsa.validator();
     const est_hash = user_op.computeHash(entry_point, @as(u256, chain_id));
-    const est_sig = try val.signUserOp(est_hash.bytes);
+    const est_sig = try val.signUserOp(allocator, est_hash.bytes);
+    defer allocator.free(est_sig);
 
     // Serialize and estimate gas
-    const est_json = try user_op.toJsonValue(allocator, &est_sig);
+    const est_json = try user_op.toJsonValue(allocator, est_sig);
     defer json_rpc.freeValue(allocator, est_json);
 
     const gas = try bundler_mod.estimateUserOperationGas(&bundler, allocator, est_json, core.ENTRY_POINT_V07);
@@ -457,13 +460,14 @@ test "e2e: full pipeline — build, estimate, sign, send UserOp" {
 
     // Step 5: Hash and sign with updated gas values
     const op_hash = user_op.computeHash(entry_point, @as(u256, chain_id));
-    const real_sig = try val.signUserOp(op_hash.bytes);
+    const real_sig = try val.signUserOp(allocator, op_hash.bytes);
+    defer allocator.free(real_sig);
     std.log.info("Step 5: Signed UserOp, hash first4: {x:0>2}{x:0>2}{x:0>2}{x:0>2}", .{
         op_hash.bytes[0], op_hash.bytes[1], op_hash.bytes[2], op_hash.bytes[3],
     });
 
     // Step 6: Serialize final UserOp and send
-    const send_json = try user_op.toJsonValue(allocator, &real_sig);
+    const send_json = try user_op.toJsonValue(allocator, real_sig);
     defer json_rpc.freeValue(allocator, send_json);
 
     const op_hash_hex = try bundler_mod.sendUserOperation(&bundler, allocator, send_json, core.ENTRY_POINT_V07);
@@ -566,9 +570,10 @@ test "e2e: second UserOp (no init_code) on deployed account" {
     const entry_point = try Address.fromHex(core.ENTRY_POINT_V07);
     var val = ecdsa.validator();
     const est_hash = user_op.computeHash(entry_point, @as(u256, chain_id));
-    const est_sig = try val.signUserOp(est_hash.bytes);
+    const est_sig = try val.signUserOp(allocator, est_hash.bytes);
+    defer allocator.free(est_sig);
 
-    const est_json = try user_op.toJsonValue(allocator, &est_sig);
+    const est_json = try user_op.toJsonValue(allocator, est_sig);
     defer json_rpc.freeValue(allocator, est_json);
 
     const gas = try bundler_mod.estimateUserOperationGas(&bundler, allocator, est_json, core.ENTRY_POINT_V07);
@@ -581,10 +586,11 @@ test "e2e: second UserOp (no init_code) on deployed account" {
 
     // Sign with updated gas values
     const op_hash = user_op.computeHash(entry_point, @as(u256, chain_id));
-    const sig = try val.signUserOp(op_hash.bytes);
+    const sig = try val.signUserOp(allocator, op_hash.bytes);
+    defer allocator.free(sig);
 
     // Send
-    const send_json = try user_op.toJsonValue(allocator, &sig);
+    const send_json = try user_op.toJsonValue(allocator, sig);
     defer json_rpc.freeValue(allocator, send_json);
 
     const op_hash_hex = try bundler_mod.sendUserOperation(&bundler, allocator, send_json, core.ENTRY_POINT_V07);

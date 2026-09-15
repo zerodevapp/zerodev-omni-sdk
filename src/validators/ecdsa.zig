@@ -18,6 +18,10 @@ pub const ECDSA_VALIDATOR_ADDR = [20]u8{
     0x67, 0x35, 0xeD, 0x98, 0xa9, 0xF0, 0x9f, 0xC4, 0xcE, 0x57,
 };
 
+/// A 65-byte all-zero dummy signature for gas estimation, in static storage so
+/// getStubSignature can borrow it without allocating.
+const STUB_SIGNATURE: [65]u8 = [_]u8{0} ** 65;
+
 pub const EcdsaValidator = struct {
     signer: Signer,
     owner_address: Address,
@@ -42,10 +46,11 @@ pub const EcdsaValidator = struct {
         };
     }
 
-    fn signUserOpImpl(ptr: *anyopaque, user_op_hash: [32]u8) SignError![65]u8 {
+    fn signUserOpImpl(ptr: *anyopaque, allocator: std.mem.Allocator, user_op_hash: [32]u8) SignError![]u8 {
         const self: *EcdsaValidator = @ptrCast(@alignCast(ptr));
         const sig = self.signer.signMessage(&user_op_hash) catch return SignError.SigningFailed;
-        return sig.toBytes();
+        const bytes = sig.toBytes();
+        return allocator.dupe(u8, &bytes) catch return SignError.OutOfMemory;
     }
 
     fn getEnableDataImpl(ptr: *anyopaque) []const u8 {
@@ -53,8 +58,10 @@ pub const EcdsaValidator = struct {
         return &self.owner_address.bytes;
     }
 
-    fn getStubSignatureImpl(_: *anyopaque) [65]u8 {
-        return [_]u8{0} ** 65;
+    fn getStubSignatureImpl(_: *anyopaque) []const u8 {
+        // A 65-byte all-zero signature: the right shape for gas estimation,
+        // borrowed from static storage so no allocation is needed.
+        return &STUB_SIGNATURE;
     }
 
     fn getIdentifierImpl(_: *anyopaque) [20]u8 {

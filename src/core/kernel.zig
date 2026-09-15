@@ -21,9 +21,11 @@ const EXEC_MODE_SINGLE: [32]u8 = [_]u8{0} ** 32;
 const EXEC_MODE_BATCH: [32]u8 = [_]u8{0x01} ++ [_]u8{0} ** 31;
 
 pub fn encodeExecute(allocator: std.mem.Allocator, exec: Execution) ![]u8 {
-    const inner_len = 20 + 32 + exec.data.len;
-    const padded_inner = paddedLen(inner_len);
-    const total = 4 + 32 + 32 + 32 + padded_inner;
+    // Checked sizing: `exec.data.len` arrives from the host over the C API, so
+    // a hostile length must fail here rather than wrap and undersize `buf`.
+    const inner_len = try std.math.add(usize, 20 + 32, exec.data.len);
+    const padded_inner = try paddedLen(inner_len);
+    const total = try std.math.add(usize, 4 + 32 + 32 + 32, padded_inner);
     const buf = try allocator.alloc(u8, total);
     @memset(buf, 0);
 
@@ -49,12 +51,14 @@ pub fn encodeExecute(allocator: std.mem.Allocator, exec: Execution) ![]u8 {
 
 pub fn encodeExecuteBatch(allocator: std.mem.Allocator, execs: []const Execution) ![]u8 {
     const n = execs.len;
-    var inner_abi_len: usize = 32 + 32 + n * 32;
+    // Checked sizing throughout: every `data.len` is host-supplied.
+    const n_words = try std.math.mul(usize, n, 32);
+    var inner_abi_len: usize = try std.math.add(usize, 32 + 32, n_words);
     for (execs) |exec| {
-        inner_abi_len += tupleSize(exec.data.len);
+        inner_abi_len = try std.math.add(usize, inner_abi_len, try tupleSize(exec.data.len));
     }
-    const padded_inner = paddedLen(inner_abi_len);
-    const total = 4 + 32 + 32 + 32 + padded_inner;
+    const padded_inner = try paddedLen(inner_abi_len);
+    const total = try std.math.add(usize, 4 + 32 + 32 + 32, padded_inner);
     const buf = try allocator.alloc(u8, total);
     @memset(buf, 0);
 
@@ -72,11 +76,12 @@ pub fn encodeExecuteBatch(allocator: std.mem.Allocator, execs: []const Execution
     writeU256(buf[pos..][0..32], @intCast(n));
     pos += 32;
 
-    var tuple_offset: usize = n * 32;
+    var tuple_offset: usize = n_words;
     for (execs) |exec| {
         writeU256(buf[pos..][0..32], @intCast(tuple_offset));
         pos += 32;
-        tuple_offset += tupleSize(exec.data.len);
+        // Cannot fail: validated in the sizing pass above.
+        tuple_offset += try tupleSize(exec.data.len);
     }
 
     for (execs) |exec| {
@@ -90,19 +95,25 @@ pub fn encodeExecuteBatch(allocator: std.mem.Allocator, execs: []const Execution
         pos += 32;
         if (exec.data.len > 0) {
             @memcpy(buf[pos .. pos + exec.data.len], exec.data);
-            pos += paddedLen(exec.data.len);
+            // Cannot fail: validated in the sizing pass above.
+            pos += try paddedLen(exec.data.len);
         }
     }
     return buf;
 }
 
-fn tupleSize(data_len: usize) usize {
-    return 128 + paddedLen(data_len);
+/// Size of one (address, uint256, bytes) tuple in the batch encoding: four
+/// 32-byte words plus the padded data. Checked, since `data_len` is host-supplied.
+fn tupleSize(data_len: usize) error{Overflow}!usize {
+    return std.math.add(usize, 128, try paddedLen(data_len));
 }
 
-fn paddedLen(len: usize) usize {
+/// Round up to a 32-byte boundary. Checked: `len + 31` wraps for `len` within
+/// 31 of `usize.max`, which would undersize the output buffer for the memcpy.
+fn paddedLen(len: usize) error{Overflow}!usize {
     if (len == 0) return 0;
-    return ((len + 31) / 32) * 32;
+    const rounded = try std.math.add(usize, len, 31);
+    return (rounded / 32) * 32;
 }
 
 fn writeU256(dest: *[32]u8, val: u256) void {
@@ -110,6 +121,33 @@ fn writeU256(dest: *[32]u8, val: u256) void {
 }
 
 // Tests
+
+// Hostile lengths arrive over the C API. These slices are never dereferenced —
+// sizing must reject them before any allocation or copy.
+test "encodeExecute rejects data lengths that overflow sizing" {
+    const allocator = std.testing.allocator;
+    const to = try Address.fromHex("0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045");
+    const max = std.math.maxInt(usize);
+    var hostile: []const u8 = &[_]u8{};
+
+    hostile.len = max; // inner_len add overflows
+    try std.testing.expectError(error.Overflow, encodeExecute(allocator, .{ .to = to, .value = 0, .data = hostile }));
+
+    hostile.len = max - 60; // inner_len fits; paddedLen's +31 overflows
+    try std.testing.expectError(error.Overflow, encodeExecute(allocator, .{ .to = to, .value = 0, .data = hostile }));
+}
+
+test "encodeExecuteBatch rejects data lengths that overflow sizing" {
+    const allocator = std.testing.allocator;
+    const to = try Address.fromHex("0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045");
+    var hostile: []const u8 = &[_]u8{};
+
+    // paddedLen survives at exactly max-31; the 128-byte tuple header add does not.
+    hostile.len = std.math.maxInt(usize) - 31;
+    const execs = [_]Execution{.{ .to = to, .value = 0, .data = hostile }};
+    try std.testing.expectError(error.Overflow, encodeExecuteBatch(allocator, &execs));
+}
+
 test "encodeExecute correct selector" {
     const allocator = std.testing.allocator;
     const to = try Address.fromHex("0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045");

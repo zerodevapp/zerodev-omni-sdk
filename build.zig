@@ -54,6 +54,24 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // ABI encoder — standalone (std only), shared by the validators to build
+    // enable-data and signatures.
+    const abi_mod = b.createModule(.{
+        .root_source_file = b.path("src/core/abi.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // Plugin lifecycle calldata (install validator / change root validator).
+    const plugin_mod = b.createModule(.{
+        .root_source_file = b.path("src/core/plugin.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "abi", .module = abi_mod },
+        },
+    });
+
     const validators_mod = b.createModule(.{
         .root_source_file = b.path("src/validators/root.zig"),
         .target = target,
@@ -62,6 +80,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zabi", .module = zabi_mod },
             .{ .name = "primitives", .module = primitives_mod },
             .{ .name = "signers", .module = signers_mod },
+            .{ .name = "abi", .module = abi_mod },
         },
     });
 
@@ -87,6 +106,8 @@ pub fn build(b: *std.Build) void {
     c_api_mod.addImport("primitives", primitives_mod);
     c_api_mod.addImport("transport", transport_mod);
     c_api_mod.addImport("signers", signers_mod);
+    c_api_mod.addImport("abi", abi_mod);
+    c_api_mod.addImport("plugin", plugin_mod);
 
     // Static library
     const static_lib = b.addLibrary(.{
@@ -113,6 +134,8 @@ pub fn build(b: *std.Build) void {
         dynamic_lib.root_module.addImport("primitives", primitives_mod);
         dynamic_lib.root_module.addImport("transport", transport_mod);
         dynamic_lib.root_module.addImport("signers", signers_mod);
+        dynamic_lib.root_module.addImport("abi", abi_mod);
+        dynamic_lib.root_module.addImport("plugin", plugin_mod);
         b.installArtifact(dynamic_lib);
     }
 
@@ -158,11 +181,54 @@ pub fn build(b: *std.Build) void {
         .root_module = c_api_mod,
     });
     const run_c_api_tests = b.addRunArtifact(c_api_tests);
+    // ABI encoder tests live in a separate compilation for the same reason as
+    // transport: the module is reached through a named import, so its tests
+    // don't surface in the root compilation.
+    const abi_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/core/abi.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_abi_tests = b.addRunArtifact(abi_tests);
+
+    const plugin_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/core/plugin.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "abi", .module = abi_mod },
+            },
+        }),
+    });
+    const run_plugin_tests = b.addRunArtifact(plugin_tests);
+
+    // Validator tests (ECDSA, WebAuthn) — reached through named imports, so a
+    // dedicated compilation like transport's.
+    const validators_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/validators/root.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zabi", .module = zabi_mod },
+                .{ .name = "primitives", .module = primitives_mod },
+                .{ .name = "signers", .module = signers_mod },
+                .{ .name = "abi", .module = abi_mod },
+            },
+        }),
+    });
+    const run_validators_tests = b.addRunArtifact(validators_tests);
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_tests.step);
     test_step.dependOn(&run_transport_tests.step);
     test_step.dependOn(&run_c_api_tests.step);
+    test_step.dependOn(&run_abi_tests.step);
+    test_step.dependOn(&run_plugin_tests.step);
+    test_step.dependOn(&run_validators_tests.step);
 
     // ---- E2E tests (require local Anvil + Alto) ----
 
@@ -222,6 +288,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "primitives", .module = primitives_mod },
             .{ .name = "transport", .module = transport_mod },
             .{ .name = "signers", .module = signers_mod },
+            .{ .name = "abi", .module = abi_mod },
+            .{ .name = "plugin", .module = plugin_mod },
         },
     });
 
@@ -241,6 +309,22 @@ pub fn build(b: *std.Build) void {
     const live_capi_step = b.step("test-live-capi", "Run C API live tests against ZeroDev Sepolia");
     live_capi_step.dependOn(&run_live_capi_tests.step);
 
+    const live_passkey_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/e2e/live_passkey.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "c_api", .module = c_api_test_mod },
+            },
+        }),
+    });
+    const run_live_passkey_tests = b.addRunArtifact(live_passkey_tests);
+
+    const live_passkey_step = b.step("test-live-passkey", "Run passkey (software authenticator) live test against ZeroDev Sepolia");
+    live_passkey_step.dependOn(&run_live_passkey_tests.step);
+
     const live_7702_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/e2e/live_7702.zig"),
@@ -256,4 +340,14 @@ pub fn build(b: *std.Build) void {
 
     const live_7702_step = b.step("test-live-7702", "Run EIP-7702 live tests against ZeroDev Sepolia");
     live_7702_step.dependOn(&run_live_7702_tests.step);
+
+    // Compile (but do not run) every network-dependent test target, so the
+    // Validator.signUserOp signature and module wiring are checked in CI
+    // without Anvil or Sepolia. The test-e2e / test-live* steps still run.
+    const compile_tests_step = b.step("compile-tests", "Compile e2e/live test binaries without running them");
+    compile_tests_step.dependOn(&e2e_tests.step);
+    compile_tests_step.dependOn(&live_tests.step);
+    compile_tests_step.dependOn(&live_capi_tests.step);
+    compile_tests_step.dependOn(&live_7702_tests.step);
+    compile_tests_step.dependOn(&live_passkey_tests.step);
 }

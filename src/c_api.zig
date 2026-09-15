@@ -7,6 +7,11 @@ const std = @import("std");
 const builtin = @import("builtin");
 const primitives = @import("primitives");
 
+// Trap on panic instead of dumping a stack trace. The default handler walks
+// the loaded images to symbolicate, pulling in dyld lookups the iOS simulator
+// runtime does not provide, so the framework can load there.
+pub const panic = std.debug.simple_panic;
+
 const Address = primitives.Address;
 const Hash = primitives.Hash;
 const keccak = @import("core/keccak.zig");
@@ -24,6 +29,10 @@ const transport = @import("transport");
 const Client = transport.Client;
 const EcdsaValidator = @import("validators/ecdsa.zig").EcdsaValidator;
 const Validator = @import("validators/Validator.zig").Validator;
+const SignError = @import("validators/Validator.zig").SignError;
+const webauthn = @import("validators/webauthn.zig");
+const weighted = @import("validators/weighted.zig");
+const plugin = @import("plugin");
 const signers = @import("signers");
 const Signer = signers.Signer;
 const LocalSigner = signers.local.LocalSigner;
@@ -38,6 +47,15 @@ fn defaultAllocator() std.mem.Allocator {
         .wasm32, .wasm64 => std.heap.wasm_allocator,
         else => std.heap.c_allocator,
     };
+}
+
+/// Slice a host-supplied (ptr, len) pair. NULL is only valid with len == 0.
+/// NULL with a non-zero length is a malformed call, not empty input — treating
+/// it as empty would, for example, hash empty calldata for a recovery approval
+/// the guardians meant to bind to a real operation.
+fn hostBytes(ptr: ?[*]const u8, len: usize) ?[]const u8 {
+    if (ptr) |p| return p[0..len];
+    return if (len == 0) &[_]u8{} else null;
 }
 
 // ---- Canonical libc allocator exports (audit F-02) ----
@@ -109,6 +127,7 @@ pub const Status = enum(c_int) {
     receipt_timeout = 22,
     receipt_failed = 23,
     invalid_signer = 24,
+    encode_failed = 25,
 };
 
 // ---- Middleware types ----
@@ -183,6 +202,7 @@ pub const ContextImpl = struct {
     http_fn: ?transport.HttpFn = null,
     http_ctx: ?*anyopaque = null,
     http_free_fn: ?transport.HttpFreeFn = null,
+    webauthn_free_fn: ?WebAuthnFreeFn = null,
 };
 
 /// Copy the host HTTP transport config from a context onto a fresh Client.
@@ -281,8 +301,11 @@ pub export fn aa_gas_zerodev(
 
     const allocator = c.allocator;
 
-    // Resolve RPC URL
-    const rpc_url: []const u8 = if (c.bundler_url.len > 0)
+    // Gas price is a read, so use the node RPC (rpc_url), not the bundler.
+    // Fall back to the bundler URL for callers that predate the rpc_url split.
+    const rpc_url: []const u8 = if (c.rpc_url.len > 0)
+        c.rpc_url
+    else if (c.bundler_url.len > 0)
         c.bundler_url
     else blk: {
         const url = core.buildRpcUrl(allocator, c.project_id, c.chain_id) catch {
@@ -291,7 +314,7 @@ pub export fn aa_gas_zerodev(
         };
         break :blk url;
     };
-    const url_allocated = c.bundler_url.len == 0;
+    const url_allocated = c.rpc_url.len == 0 and c.bundler_url.len == 0;
     defer if (url_allocated) allocator.free(@constCast(rpc_url));
 
     var rpc = Client.init(allocator, rpc_url) catch {
@@ -380,6 +403,17 @@ pub export fn aa_context_set_http_transport(
 /// Audit F-02. Register a free function for response buffers returned by
 /// the HTTP transport. Pass NULL to clear (the SDK then frees with libc
 /// free — safe only when the host allocates via `aa_alloc` or libc malloc).
+/// Register a free function for the buffers a passkey sign callback returns.
+/// NULL clears it; the SDK then frees with libc free (safe for aa_alloc).
+pub export fn aa_context_set_webauthn_free_fn(
+    ctx: ?*ContextImpl,
+    free_fn: ?WebAuthnFreeFn,
+) callconv(.c) Status {
+    const c = ctx orelse return .null_context;
+    c.webauthn_free_fn = free_fn;
+    return .ok;
+}
+
 pub export fn aa_context_set_http_free_fn(
     ctx: ?*ContextImpl,
     free_fn: ?transport.HttpFreeFn,
@@ -668,10 +702,99 @@ pub const AA_KERNEL_V3_3: c_int = 0;
 /// for EIP-7702 accounts.
 pub const KERNEL_V3_3_DELEGATION_TARGET: [20]u8 = core.KERNEL_V3_3_DELEGATION_TARGET;
 
+/// C-visible WebAuthn assertion the host fills after running the passkey
+/// ceremony.
+///
+/// Ownership follows the F-02 contract used by HttpFn and paymaster_data: on a
+/// 0 return all three buffers become the SDK's. It copies them, then frees each
+/// via libc free — so the host allocates with `aa_alloc` / libc malloc — or via
+/// the callback registered with `aa_context_set_webauthn_free_fn`. Each field
+/// must be an independently freeable allocation (never three fields carved from
+/// one block, never aliased). On a non-zero return the SDK does not read or free
+/// `out`; the host keeps ownership of anything it allocated.
+pub const CWebAuthnAssertion = extern struct {
+    authenticator_data: ?[*]const u8,
+    authenticator_data_len: usize,
+    client_data_json: ?[*]const u8,
+    client_data_json_len: usize,
+    der_signature: ?[*]const u8,
+    der_signature_len: usize,
+};
+
+/// Host callback that runs the Face ID / Touch ID ceremony with the challenge
+/// (the UserOp hash) and fills the assertion. Returns 0 on success.
+pub const WebAuthnSignFn = *const fn (?*anyopaque, *const [32]u8, *CWebAuthnAssertion) callconv(.c) c_int;
+
+/// Optional free callback for the buffers a WebAuthn sign callback hands back.
+/// Same shape as HttpFreeFn / PaymasterFreeFn: receives the sign callback's
+/// user_ctx. NULL (unregistered) means the host used aa_alloc / libc malloc and
+/// the SDK frees with libc free.
+pub const WebAuthnFreeFn = *const fn (?*anyopaque, [*]u8, usize) callconv(.c) void;
+
+/// Bridges the host's passkey callback to the WebAuthn validator's signer. Held
+/// at a stable address inside AccountImpl so the validator can point at it.
+pub const PasskeyBridge = struct {
+    sign_fn: WebAuthnSignFn,
+    user_ctx: ?*anyopaque,
+    context: *ContextImpl,
+
+    pub fn webAuthnSigner(self: *PasskeyBridge) webauthn.WebAuthnSigner {
+        return .{ .ptr = @ptrCast(self), .signFn = signImpl };
+    }
+
+    fn signImpl(ptr: *anyopaque, allocator: std.mem.Allocator, challenge: [32]u8) SignError!webauthn.Assertion {
+        const self: *PasskeyBridge = @ptrCast(@alignCast(ptr));
+        // Zero-initialised so a callback that leaves a field untouched cannot
+        // hand us an arbitrary pointer to free.
+        var out: CWebAuthnAssertion = std.mem.zeroes(CWebAuthnAssertion);
+        if (self.sign_fn(self.user_ctx, &challenge, &out) != 0) return SignError.SigningFailed;
+
+        // Ownership of all three host buffers transferred to us on the 0 return.
+        // Register the frees BEFORE validating or copying, so a malformed field
+        // or a failed dupe cannot leak the others.
+        defer self.freeHostBuf(out.authenticator_data, out.authenticator_data_len);
+        defer self.freeHostBuf(out.client_data_json, out.client_data_json_len);
+        defer self.freeHostBuf(out.der_signature, out.der_signature_len);
+
+        const ad = hostBytes(out.authenticator_data, out.authenticator_data_len) orelse return SignError.SigningFailed;
+        const cd = hostBytes(out.client_data_json, out.client_data_json_len) orelse return SignError.SigningFailed;
+        const der = hostBytes(out.der_signature, out.der_signature_len) orelse return SignError.SigningFailed;
+        // An assertion with an empty component is malformed.
+        if (ad.len == 0 or cd.len == 0 or der.len == 0) return SignError.SigningFailed;
+
+        return .{
+            .authenticator_data = try allocator.dupe(u8, ad),
+            .client_data_json = try allocator.dupe(u8, cd),
+            .der_signature = try allocator.dupe(u8, der),
+        };
+    }
+
+    fn freeHostBuf(self: *PasskeyBridge, ptr: ?[*]const u8, len: usize) void {
+        const p = ptr orelse return;
+        const mut: [*]u8 = @constCast(p);
+        if (self.context.webauthn_free_fn) |free_fn| {
+            free_fn(self.user_ctx, mut, len);
+        } else {
+            std.c.free(mut);
+        }
+    }
+};
+
+/// An account's root validator: a local ECDSA owner, or a passkey (WebAuthn)
+/// owner driven by a host callback.
+pub const AccountValidator = union(enum) {
+    ecdsa: EcdsaValidator,
+    webauthn: struct {
+        bridge: PasskeyBridge,
+        validator: webauthn.WebAuthnValidator,
+    },
+};
+
 pub const AccountImpl = struct {
     context: *ContextImpl,
-    signer: *SignerImpl,
-    ecdsa: EcdsaValidator,
+    /// The local signer, for ECDSA / EIP-7702 accounts. Null for passkey owners.
+    signer: ?*SignerImpl,
+    validator_kind: AccountValidator,
     kernel_version: KernelVersion,
     index: u32,
     owner_address: Address,
@@ -681,9 +804,39 @@ pub const AccountImpl = struct {
     delegation_installed: ?bool = null,
 
     pub fn getValidator(self: *AccountImpl) Validator {
-        return self.ecdsa.validator();
+        return switch (self.validator_kind) {
+            .ecdsa => |*e| e.validator(),
+            .webauthn => |*w| w.validator.validator(),
+        };
+    }
+
+    /// Whether signing needs a user gesture — then gas estimation uses the stub
+    /// so the user is prompted only once, for the final signature.
+    pub fn interactiveSigning(self: *AccountImpl) bool {
+        return self.validator_kind == .webauthn;
+    }
+
+    /// The MetaFactory deploy calldata for this account's first UserOp.
+    pub fn buildFactoryData(self: *AccountImpl, allocator: std.mem.Allocator) ![]u8 {
+        return switch (self.validator_kind) {
+            .ecdsa => create2.buildFactoryCalldata(allocator, self.owner_address, @as(u256, self.index), self.kernel_version),
+            .webauthn => |*w| create2.buildFactoryCalldataGeneric(
+                allocator,
+                Address.fromBytes(w.validator.addr),
+                &w.validator.enable_data,
+                @as(u256, self.index),
+                self.kernel_version,
+            ),
+        };
     }
 };
+
+/// The signature to use for gas estimation: the borrowed stub (duped into the
+/// arena) for interactive signers, or a real signature for ECDSA.
+fn estimationSignature(allocator: std.mem.Allocator, val: Validator, interactive: bool, hash: [32]u8) SignError![]u8 {
+    if (interactive) return allocator.dupe(u8, val.getStubSignature());
+    return val.signUserOp(allocator, hash);
+}
 
 /// Create a Kernel smart account.
 ///
@@ -717,7 +870,13 @@ pub export fn aa_account_create(
     const c = ctx orelse return .null_context;
     const s = signer orelse return .invalid_signer;
 
-    const kv = KernelVersion.fromInt(@intCast(version)) orelse {
+    // Checked: `version` is a host-supplied c_int. A plain @intCast to u8 traps
+    // in safe builds and truncates in ReleaseFast (-256 becomes 0 → v3.3).
+    const version_u8 = std.math.cast(u8, version) orelse {
+        setLastError("invalid kernel version: {d}", .{version});
+        return .invalid_kernel_version;
+    };
+    const kv = KernelVersion.fromInt(version_u8) orelse {
         setLastError("invalid kernel version: {d}", .{version});
         return .invalid_kernel_version;
     };
@@ -735,7 +894,7 @@ pub export fn aa_account_create(
     impl.* = .{
         .context = c,
         .signer = s,
-        .ecdsa = EcdsaValidator.init(s.getSigner()),
+        .validator_kind = .{ .ecdsa = EcdsaValidator.init(s.getSigner()) },
         .kernel_version = kv,
         .index = index,
         .owner_address = owner_addr,
@@ -760,7 +919,13 @@ pub export fn aa_context_new_account_7702(
     const c = ctx orelse return .null_context;
     const s = signer orelse return .invalid_signer;
 
-    const kv = KernelVersion.fromInt(@intCast(version)) orelse {
+    // Checked: `version` is a host-supplied c_int. A plain @intCast to u8 traps
+    // in safe builds and truncates in ReleaseFast (-256 becomes 0 → v3.3).
+    const version_u8 = std.math.cast(u8, version) orelse {
+        setLastError("invalid kernel version: {d}", .{version});
+        return .invalid_kernel_version;
+    };
+    const kv = KernelVersion.fromInt(version_u8) orelse {
         setLastError("invalid kernel version: {d}", .{version});
         return .invalid_kernel_version;
     };
@@ -777,7 +942,7 @@ pub export fn aa_context_new_account_7702(
     impl.* = .{
         .context = c,
         .signer = s,
-        .ecdsa = EcdsaValidator.init(s.getSigner()),
+        .validator_kind = .{ .ecdsa = EcdsaValidator.init(s.getSigner()) },
         .kernel_version = kv,
         .index = 0,
         .owner_address = owner_addr,
@@ -786,6 +951,94 @@ pub export fn aa_context_new_account_7702(
         .mode = .eip7702,
         .delegation_installed = null,
     };
+
+    out.?.* = impl;
+    return .ok;
+}
+
+/// Create a passkey (WebAuthn) owned account. The account is owned by the
+/// credential (pub_x, pub_y, authenticator_id_hash); sign_fn runs the ceremony
+/// on the host. contract_version selects the WebAuthn validator (0=v0.0.1,
+/// 1=v0.0.2, 2=v0.0.3) — use 2; see webauthn.ContractVersion for why 0 and 1
+/// are paymaster-blocked. The counterfactual address matches @zerodev/sdk.
+pub export fn aa_account_create_passkey(
+    ctx: ?*ContextImpl,
+    sign_fn: ?WebAuthnSignFn,
+    user_ctx: ?*anyopaque,
+    pub_x: ?[*]const u8,
+    pub_y: ?[*]const u8,
+    authenticator_id_hash: ?[*]const u8,
+    contract_version: c_int,
+    chain_id: u64,
+    version: c_int,
+    index: u32,
+    out: ?*?*AccountImpl,
+) callconv(.c) Status {
+    if (out == null) return .null_out_ptr;
+    const c = ctx orelse return .null_context;
+    const sfn = sign_fn orelse return .invalid_signer;
+    if (pub_x == null or pub_y == null or authenticator_id_hash == null) return .null_out_ptr;
+
+    // Checked: `version` is a host-supplied c_int. A plain @intCast to u8 traps
+    // in safe builds and truncates in ReleaseFast (-256 becomes 0 → v3.3).
+    const version_u8 = std.math.cast(u8, version) orelse {
+        setLastError("invalid kernel version: {d}", .{version});
+        return .invalid_kernel_version;
+    };
+    const kv = KernelVersion.fromInt(version_u8) orelse {
+        setLastError("invalid kernel version: {d}", .{version});
+        return .invalid_kernel_version;
+    };
+    const cv: webauthn.ContractVersion = switch (contract_version) {
+        0 => .v0_0_1,
+        1 => .v0_0_2,
+        2 => .v0_0_3,
+        else => {
+            setLastError("invalid WebAuthn contract version: {d}", .{contract_version});
+            return .invalid_signer;
+        },
+    };
+
+    const x = std.mem.readInt(u256, pub_x.?[0..32], .big);
+    const y = std.mem.readInt(u256, pub_y.?[0..32], .big);
+    var id_hash: [32]u8 = undefined;
+    @memcpy(&id_hash, authenticator_id_hash.?[0..32]);
+
+    const allocator = c.allocator;
+    const impl = allocator.create(AccountImpl) catch return .out_of_memory;
+
+    // Place the bridge at its final (heap) address first, then build the
+    // validator pointing at it.
+    impl.validator_kind = .{ .webauthn = .{
+        .bridge = .{ .sign_fn = sfn, .user_ctx = user_ctx, .context = c },
+        .validator = undefined,
+    } };
+    impl.validator_kind.webauthn.validator = webauthn.WebAuthnValidator.init(
+        impl.validator_kind.webauthn.bridge.webAuthnSigner(),
+        x,
+        y,
+        id_hash,
+        cv,
+        chain_id,
+    );
+
+    const validator_addr = Address.fromBytes(webauthn.validatorAddress(cv));
+    const enable = webauthn.WebAuthnValidator.encodeEnableData(x, y, id_hash);
+    const sender_addr = create2.getKernelAddressGeneric(allocator, validator_addr, &enable, @as(u256, index), kv) catch {
+        allocator.destroy(impl);
+        setLastError("failed to compute passkey account address", .{});
+        return .get_address_failed;
+    };
+
+    impl.context = c;
+    impl.signer = null;
+    impl.kernel_version = kv;
+    impl.index = index;
+    // No EOA owner; the validator address stands in for owner-address uses.
+    impl.owner_address = validator_addr;
+    impl.sender_address = sender_addr;
+    impl.mode = .kernel_create2;
+    impl.delegation_installed = null;
 
     out.?.* = impl;
     return .ok;
@@ -870,7 +1123,9 @@ fn prepareEip7702Authorization(
         setLastError("eth_getTransactionCount(pending) failed: {s}", .{@errorName(err)});
         return AuthPrepError.RpcFailed;
     };
-    const signer_iface = acc.signer.getSigner();
+    // EIP-7702 is an EOA path, so a local signer is always present here.
+    const signer_impl = acc.signer orelse return AuthPrepError.SignFailed;
+    const signer_iface = signer_impl.getSigner();
     const signed = signer_iface.signAuthorization(chain_id, target, eoa_nonce) catch |err| {
         setLastError("signAuthorization failed: {s}", .{@errorName(err)});
         return AuthPrepError.SignFailed;
@@ -899,7 +1154,11 @@ pub export fn aa_userop_build(
 
     // Convert C calls to kernel Executions and encode
     var arena = std.heap.ArenaAllocator.init(allocator);
-    errdefer arena.deinit();
+    // This fn returns a Status, not an error union, so `errdefer` would never
+    // fire. Free the arena on every early return; the success path hands it
+    // to UserOpImpl and marks it committed.
+    var committed = false;
+    defer if (!committed) arena.deinit();
     const a = arena.allocator();
 
     var execs = a.alloc(kernel_mod.Execution, calls_len) catch {
@@ -911,10 +1170,10 @@ pub export fn aa_userop_build(
         const target = Address.fromBytes(c_call.target);
         const value: u256 = std.mem.readInt(u256, &c_call.value_be, .big);
 
-        var data: []const u8 = &[_]u8{};
-        if (c_call.calldata != null and c_call.calldata_len > 0) {
-            data = c_call.calldata.?[0..c_call.calldata_len];
-        }
+        const data = hostBytes(c_call.calldata, c_call.calldata_len) orelse {
+            setLastError("call {d}: calldata is NULL but calldata_len is {d}", .{ i, c_call.calldata_len });
+            return .null_out_ptr;
+        };
 
         execs[i] = .{
             .to = target,
@@ -941,12 +1200,10 @@ pub export fn aa_userop_build(
     var init_code: []u8 = &[_]u8{};
     var eip7702_auth: ?core.Authorization = null;
     if (acc.mode == .kernel_create2) {
-        const factory_data = create2.buildFactoryCalldata(
-            a,
-            acc.owner_address,
-            @as(u256, acc.index),
-            acc.kernel_version,
-        ) catch {
+        // Dispatches on validator_kind — the high-level aa_send_userop path
+        // already does this; a bare ECDSA factory here gave passkey accounts an
+        // initCode whose CREATE2 result did not match `sender`.
+        const factory_data = acc.buildFactoryData(a) catch {
             setLastError("failed to build factory calldata", .{});
             return .build_userop_failed;
         };
@@ -960,15 +1217,19 @@ pub export fn aa_userop_build(
         @memcpy(init_code[0..20], &meta_factory.bytes);
         @memcpy(init_code[20..], factory_data);
     } else if (acc.mode == .eip7702) {
-        const rpc_url: []const u8 = if (acc.context.bundler_url.len > 0)
+        // 7702 reads use the node RPC, not the bundler. Fall back to the
+        // bundler URL for callers that predate the rpc_url split.
+        const read_url: []const u8 = if (acc.context.rpc_url.len > 0)
+            acc.context.rpc_url
+        else if (acc.context.bundler_url.len > 0)
             acc.context.bundler_url
         else
             core.buildRpcUrl(a, acc.context.project_id, acc.context.chain_id) catch {
-                setLastError("failed to build RPC URL from project_id", .{});
+                setLastError("failed to build read RPC URL", .{});
                 return .build_userop_failed;
             };
-        var rpc = Client.init(a, rpc_url) catch {
-            setLastError("failed to create RPC client", .{});
+        var rpc = Client.init(a, read_url) catch {
+            setLastError("failed to create read RPC client", .{});
             return .build_userop_failed;
         };
         wireTransport(&rpc, acc.context);
@@ -978,11 +1239,11 @@ pub export fn aa_userop_build(
         };
     }
 
-    // Stub signature (65 zero bytes)
-    const stub_sig = a.alloc(u8, 65) catch {
+    // Stub signature in the validator's own shape (65 zero bytes for ECDSA, the
+    // structured WebAuthn dummy for passkeys) so gas estimation is realistic.
+    const stub_sig = a.dupe(u8, acc.getValidator().getStubSignature()) catch {
         return .out_of_memory;
     };
-    @memset(stub_sig, 0);
 
     const impl = allocator.create(UserOpImpl) catch {
         return .out_of_memory;
@@ -1005,6 +1266,7 @@ pub export fn aa_userop_build(
         .authorization = eip7702_auth,
     };
 
+    committed = true;
     out.?.* = impl;
     return .ok;
 }
@@ -1067,18 +1329,13 @@ pub export fn aa_userop_sign(
     const hash = user_op.computeHash(entry_point, @as(u256, userop.chain_id));
 
     var val = acc.getValidator();
-    const sig = val.signUserOp(hash.bytes) catch {
-        setLastError("ECDSA signing failed", .{});
+    // The signature is allocated in the arena, which the UserOp owns and frees.
+    const a = userop.arena.allocator();
+    const sig = val.signUserOp(a, hash.bytes) catch {
+        setLastError("validator signing failed", .{});
         return .sign_userop_failed;
     };
-
-    // Store signature in the arena
-    const a = userop.arena.allocator();
-    const sig_copy = a.alloc(u8, 65) catch {
-        return .out_of_memory;
-    };
-    @memcpy(sig_copy, &sig);
-    userop.signature = sig_copy;
+    userop.signature = sig;
 
     return .ok;
 }
@@ -1250,6 +1507,19 @@ pub export fn aa_get_last_error() callconv(.c) [*:0]const u8 {
     return @ptrCast(&last_error_buf);
 }
 
+threadlocal var last_rpc_error_cstr: [transport.last_rpc_error_max + 1]u8 = undefined;
+
+/// The server's last JSON-RPC error as a C string, or "". aa_get_last_error is
+/// the SDK's summary; this is the reason the server sent.
+pub export fn aa_get_last_rpc_error() callconv(.c) [*:0]const u8 {
+    const detail = transport.lastRpcError();
+    if (detail.len == 0) return "";
+    const n = @min(detail.len, last_rpc_error_cstr.len - 1);
+    @memcpy(last_rpc_error_cstr[0..n], detail[0..n]);
+    last_rpc_error_cstr[n] = 0;
+    return @ptrCast(&last_rpc_error_cstr);
+}
+
 // ---- High-level send (full pipeline: nonce → build → paymaster → estimate → sign → send) ----
 
 pub export fn aa_send_userop(
@@ -1269,17 +1539,33 @@ pub export fn aa_send_userop(
     defer arena.deinit();
     const a = arena.allocator();
 
-    // Resolve RPC URL: use bundler_url if set, else derive from project_id + chain_id
-    const rpc_url: []const u8 = if (acc.context.bundler_url.len > 0)
+    // Reads use the node RPC; the bundler and paymaster use the bundler URL.
+    // They may be different providers, so each needs its own client. Reads
+    // fall back to the bundler URL for callers that predate the rpc_url split.
+    const read_url: []const u8 = if (acc.context.rpc_url.len > 0)
+        acc.context.rpc_url
+    else if (acc.context.bundler_url.len > 0)
         acc.context.bundler_url
     else
         core.buildRpcUrl(a, acc.context.project_id, acc.context.chain_id) catch {
-            setLastError("failed to build RPC URL from project_id", .{});
+            setLastError("failed to build read RPC URL", .{});
             return .send_userop_failed;
         };
+    var read_rpc = Client.init(a, read_url) catch {
+        setLastError("failed to create read RPC client", .{});
+        return .send_userop_failed;
+    };
+    wireTransport(&read_rpc, acc.context);
 
-    var rpc = Client.init(a, rpc_url) catch {
-        setLastError("failed to create RPC client", .{});
+    const bundler_url: []const u8 = if (acc.context.bundler_url.len > 0)
+        acc.context.bundler_url
+    else
+        core.buildRpcUrl(a, acc.context.project_id, acc.context.chain_id) catch {
+            setLastError("failed to build bundler RPC URL", .{});
+            return .send_userop_failed;
+        };
+    var rpc = Client.init(a, bundler_url) catch {
+        setLastError("failed to create bundler RPC client", .{});
         return .send_userop_failed;
     };
     wireTransport(&rpc, acc.context);
@@ -1288,7 +1574,7 @@ pub export fn aa_send_userop(
     const entry_point = Address.fromHex(core.ENTRY_POINT_V07) catch return .send_userop_failed;
 
     // Step 1: Get nonce
-    const nonce = entrypoint_mod.getNonce(&rpc, a, core.ENTRY_POINT_V07, acc.sender_address, 0) catch |err| {
+    const nonce = entrypoint_mod.getNonce(&read_rpc, a, core.ENTRY_POINT_V07, acc.sender_address, 0) catch |err| {
         setLastError("getNonce failed: {s}", .{@errorName(err)});
         return .send_userop_failed;
     };
@@ -1297,10 +1583,10 @@ pub export fn aa_send_userop(
     var execs = a.alloc(kernel_mod.Execution, calls_len) catch return .out_of_memory;
     for (0..calls_len) |i| {
         const c_call = calls.?[i];
-        var data: []const u8 = &[_]u8{};
-        if (c_call.calldata != null and c_call.calldata_len > 0) {
-            data = c_call.calldata.?[0..c_call.calldata_len];
-        }
+        const data = hostBytes(c_call.calldata, c_call.calldata_len) orelse {
+            setLastError("call {d}: calldata is NULL but calldata_len is {d}", .{ i, c_call.calldata_len });
+            return .null_out_ptr;
+        };
         execs[i] = .{
             .to = Address.fromBytes(c_call.target),
             .value = std.mem.readInt(u256, &c_call.value_be, .big),
@@ -1325,7 +1611,7 @@ pub export fn aa_send_userop(
     var eip7702_auth: ?core.Authorization = null;
     if (acc.mode == .kernel_create2) {
         if (nonce == 0) {
-            const factory_data = create2.buildFactoryCalldata(a, acc.owner_address, @as(u256, acc.index), acc.kernel_version) catch {
+            const factory_data = acc.buildFactoryData(a) catch {
                 setLastError("failed to build factory calldata", .{});
                 return .build_userop_failed;
             };
@@ -1335,7 +1621,7 @@ pub export fn aa_send_userop(
             @memcpy(init_code[20..], factory_data);
         }
     } else {
-        eip7702_auth = prepareEip7702Authorization(acc, &rpc, a, chain_id) catch |err| switch (err) {
+        eip7702_auth = prepareEip7702Authorization(acc, &read_rpc, a, chain_id) catch |err| switch (err) {
             AuthPrepError.RpcFailed => return .send_userop_failed,
             AuthPrepError.SignFailed => return .sign_userop_failed,
         };
@@ -1366,6 +1652,10 @@ pub export fn aa_send_userop(
     };
 
     var val = acc.getValidator();
+    // Gas estimation uses the stub for interactive (passkey) signing so the user
+    // is prompted only once — for the final signature; ECDSA signs for real
+    // throughout, exactly as before.
+    const interactive = acc.interactiveSigning();
 
     // Paymaster middleware is optional — if not set, send unsponsored (user pays gas)
     const pm_mw = acc.context.paymaster_middleware;
@@ -1376,11 +1666,11 @@ pub export fn aa_send_userop(
     // Step 6: Paymaster stub (before gas estimation) — skip if no paymaster
     if (pm_mw) |mw| {
         const stub_hash = user_op.computeHash(entry_point, @as(u256, chain_id));
-        const stub_sig = val.signUserOp(stub_hash.bytes) catch {
+        const stub_sig = estimationSignature(a, val, interactive, stub_hash.bytes) catch {
             setLastError("signing for paymaster stub failed", .{});
             return .sign_userop_failed;
         };
-        const stub_json_val = user_op.toJsonValue(a, &stub_sig) catch return .serialize_failed;
+        const stub_json_val = user_op.toJsonValue(a, stub_sig) catch return .serialize_failed;
         const stub_json_str = std.json.Stringify.valueAlloc(a, stub_json_val, .{}) catch return .serialize_failed;
 
         var pm_result: PaymasterResult = undefined;
@@ -1389,7 +1679,10 @@ pub export fn aa_send_userop(
         defer if (pm_result.paymaster_data) |p| freePaymasterData(acc.context, p, pm_result.paymaster_data_len);
 
         const pm_addr = Address.fromBytes(pm_result.paymaster);
-        const pm_data: []const u8 = if (pm_result.paymaster_data) |p| p[0..pm_result.paymaster_data_len] else &[_]u8{};
+        const pm_data = hostBytes(pm_result.paymaster_data, pm_result.paymaster_data_len) orelse {
+            setLastError("paymaster middleware returned NULL paymaster_data with len {d}", .{pm_result.paymaster_data_len});
+            return .paymaster_failed;
+        };
 
         const pm_packed_stub = paymaster_mod.packPaymasterAndData(
             a,
@@ -1404,11 +1697,11 @@ pub export fn aa_send_userop(
     // Step 7: Estimate gas
     const gas = blk: {
         const est_hash = user_op.computeHash(entry_point, @as(u256, chain_id));
-        const est_sig = val.signUserOp(est_hash.bytes) catch {
+        const est_sig = estimationSignature(a, val, interactive, est_hash.bytes) catch {
             setLastError("signing for gas estimation failed", .{});
             return .sign_userop_failed;
         };
-        const est_json = user_op.toJsonValue(a, &est_sig) catch return .serialize_failed;
+        const est_json = user_op.toJsonValue(a, est_sig) catch return .serialize_failed;
 
         break :blk bundler_mod.estimateUserOperationGas(&rpc, a, est_json, core.ENTRY_POINT_V07) catch |err| {
             setLastError("eth_estimateUserOperationGas failed: {s}", .{@errorName(err)});
@@ -1435,11 +1728,15 @@ pub export fn aa_send_userop(
         user_op.paymaster_and_data = pm_packed_est;
 
         const final_hash = user_op.computeHash(entry_point, @as(u256, chain_id));
-        const final_sig = val.signUserOp(final_hash.bytes) catch {
+        // Stub for interactive signers here too: the paymaster signs over the
+        // UserOp excluding `signature`, so the account signature is a dummy in
+        // both phases — exactly as in the stub/estimate steps above. The single
+        // real ceremony happens once final paymaster data is installed (step 10).
+        const final_sig = estimationSignature(a, val, interactive, final_hash.bytes) catch {
             setLastError("signing for final paymaster failed", .{});
             return .sign_userop_failed;
         };
-        const final_json_val = user_op.toJsonValue(a, &final_sig) catch return .serialize_failed;
+        const final_json_val = user_op.toJsonValue(a, final_sig) catch return .serialize_failed;
         const final_json_str = std.json.Stringify.valueAlloc(a, final_json_val, .{}) catch return .serialize_failed;
 
         var pm_result: PaymasterResult = undefined;
@@ -1448,7 +1745,10 @@ pub export fn aa_send_userop(
         defer if (pm_result.paymaster_data) |p| freePaymasterData(acc.context, p, pm_result.paymaster_data_len);
 
         const pm_addr = Address.fromBytes(pm_result.paymaster);
-        const pm_data: []const u8 = if (pm_result.paymaster_data) |p| p[0..pm_result.paymaster_data_len] else &[_]u8{};
+        const pm_data = hostBytes(pm_result.paymaster_data, pm_result.paymaster_data_len) orelse {
+            setLastError("paymaster middleware returned NULL paymaster_data with len {d}", .{pm_result.paymaster_data_len});
+            return .paymaster_failed;
+        };
 
         const pm_packed_final = paymaster_mod.packPaymasterAndData(
             a,
@@ -1462,13 +1762,13 @@ pub export fn aa_send_userop(
 
     // Step 10: Final sign
     const op_hash = user_op.computeHash(entry_point, @as(u256, chain_id));
-    const real_sig = val.signUserOp(op_hash.bytes) catch {
-        setLastError("final ECDSA signing failed", .{});
+    const real_sig = val.signUserOp(a, op_hash.bytes) catch {
+        setLastError("final validator signing failed", .{});
         return .sign_userop_failed;
     };
 
     // Step 11: Send
-    const send_json = user_op.toJsonValue(a, &real_sig) catch {
+    const send_json = user_op.toJsonValue(a, real_sig) catch {
         setLastError("failed to serialize final UserOp", .{});
         return .serialize_failed;
     };
@@ -1587,6 +1887,252 @@ pub export fn aa_wait_for_user_operation_receipt(
     return .receipt_timeout;
 }
 
+// ---- Validator enable-data and plugin lifecycle calldata ----
+//
+// These let the host install a validator (co-ownership / guardians) or rotate
+// the account's owner. The account signs the resulting call with its current
+// sudo validator, so it's sent as a normal UserOp targeting the account itself.
+// Every returned buffer is heap-allocated; free it with aa_free.
+
+/// abi.encode((uint256 x, uint256 y), bytes32 authenticatorIdHash) for a passkey
+/// (WebAuthn) validator. Writes exactly 96 bytes into out[0..96].
+pub export fn aa_encode_webauthn_enable_data(
+    pub_x: ?[*]const u8,
+    pub_y: ?[*]const u8,
+    authenticator_id_hash: ?[*]const u8,
+    out: ?*[*]u8,
+    out_len: ?*usize,
+) callconv(.c) Status {
+    if (out == null or out_len == null) return .null_out_ptr;
+    if (pub_x == null or pub_y == null or authenticator_id_hash == null) return .null_out_ptr;
+    const x = std.mem.readInt(u256, pub_x.?[0..32], .big);
+    const y = std.mem.readInt(u256, pub_y.?[0..32], .big);
+    var hash: [32]u8 = undefined;
+    @memcpy(&hash, authenticator_id_hash.?[0..32]);
+    const enable = webauthn.WebAuthnValidator.encodeEnableData(x, y, hash);
+    // Allocated output like every sibling encoder — the caller frees with
+    // aa_free — rather than trusting an unsized caller buffer.
+    const buf = defaultAllocator().dupe(u8, &enable) catch return .out_of_memory;
+    out.?.* = buf.ptr;
+    out_len.?.* = buf.len;
+    return .ok;
+}
+
+/// abi.encode(address[] guardians, uint24[] weights, uint24 threshold, uint48
+/// delay) for the weighted-ECDSA validator. guardians is count*20 bytes;
+/// weights is count entries. The result is allocated into out/out_len.
+pub export fn aa_encode_weighted_enable_data(
+    guardians: ?[*]const u8,
+    weights: ?[*]const u32,
+    count: usize,
+    threshold: u32,
+    delay: u64,
+    out: ?*[*]u8,
+    out_len: ?*usize,
+) callconv(.c) Status {
+    if (out == null or out_len == null) return .null_out_ptr;
+    if (guardians == null or weights == null or count == 0) return .encode_failed;
+
+    const allocator = defaultAllocator();
+    const set = allocator.alloc(weighted.Guardian, count) catch return .out_of_memory;
+    defer allocator.free(set);
+    for (0..count) |i| {
+        var addr: [20]u8 = undefined;
+        @memcpy(&addr, guardians.?[i * 20 .. i * 20 + 20]);
+        // The abi fields are narrower than the C ints, so a value that does
+        // not fit would silently wrap in ReleaseFast. Reject it instead.
+        const weight = std.math.cast(u24, weights.?[i]) orelse {
+            setLastError("guardian weight exceeds the uint24 abi field", .{});
+            return .encode_failed;
+        };
+        set[i] = .{ .address = addr, .weight = weight };
+    }
+
+    const threshold_u24 = std.math.cast(u24, threshold) orelse {
+        setLastError("threshold exceeds the uint24 abi field", .{});
+        return .encode_failed;
+    };
+    const delay_u48 = std.math.cast(u48, delay) orelse {
+        setLastError("delay exceeds the uint48 abi field", .{});
+        return .encode_failed;
+    };
+    const data = weighted.WeightedValidator.encodeEnableData(allocator, set, threshold_u24, delay_u48) catch {
+        setLastError("failed to encode weighted enable-data", .{});
+        return .encode_failed;
+    };
+    out.?.* = data.ptr;
+    out_len.?.* = data.len;
+    return .ok;
+}
+
+/// Calldata to install `module` as a secondary validator with `validator_data`
+/// (its enable-data). Send it to the account as a UserOp.
+pub export fn aa_encode_install_validator(
+    module: ?[*]const u8,
+    validator_data: ?[*]const u8,
+    validator_data_len: usize,
+    out: ?*[*]u8,
+    out_len: ?*usize,
+) callconv(.c) Status {
+    return encodePluginCall(true, module, validator_data, validator_data_len, out, out_len);
+}
+
+/// Calldata to make `module` the account's root (sudo) validator with
+/// `validator_data` (its enable-data). Send it to the account as a UserOp.
+pub export fn aa_encode_change_root_validator(
+    module: ?[*]const u8,
+    validator_data: ?[*]const u8,
+    validator_data_len: usize,
+    out: ?*[*]u8,
+    out_len: ?*usize,
+) callconv(.c) Status {
+    return encodePluginCall(false, module, validator_data, validator_data_len, out, out_len);
+}
+
+/// The value guardians approve for a recovery, written into out[0..32]:
+/// keccak256(abi.encode(sender, callData, nonce)). `nonce_be` is a 32-byte
+/// big-endian uint256. Both guardian kinds approve this exact hash.
+pub export fn aa_recovery_hash(
+    sender: ?[*]const u8,
+    call_data: ?[*]const u8,
+    call_data_len: usize,
+    nonce_be: ?[*]const u8,
+    out: ?[*]u8,
+) callconv(.c) Status {
+    if (out == null or sender == null or nonce_be == null) return .null_out_ptr;
+    var s: [20]u8 = undefined;
+    @memcpy(&s, sender.?[0..20]);
+    const cd = hostBytes(call_data, call_data_len) orelse {
+        setLastError("call_data is NULL but call_data_len is {d}", .{call_data_len});
+        return .null_out_ptr;
+    };
+    const nonce = std.mem.readInt(u256, nonce_be.?[0..32], .big);
+    const h = plugin.callDataAndNonceHash(defaultAllocator(), s, cd, nonce) catch {
+        setLastError("failed to compute recovery hash", .{});
+        return .encode_failed;
+    };
+    @memcpy(out.?[0..32], &h);
+    return .ok;
+}
+
+/// Calldata for approve(hash, kernel) on the weighted validator, for a smart
+/// account guardian to record its approval on chain. Send it to the validator.
+pub export fn aa_encode_approve(
+    hash: ?[*]const u8,
+    kernel: ?[*]const u8,
+    out: ?*[*]u8,
+    out_len: ?*usize,
+) callconv(.c) Status {
+    if (out == null or out_len == null or hash == null or kernel == null) return .null_out_ptr;
+    var h: [32]u8 = undefined;
+    @memcpy(&h, hash.?[0..32]);
+    var k: [20]u8 = undefined;
+    @memcpy(&k, kernel.?[0..20]);
+    const cd = plugin.approveCallData(defaultAllocator(), h, k) catch {
+        setLastError("failed to encode approve calldata", .{});
+        return .encode_failed;
+    };
+    out.?.* = cd.ptr;
+    out_len.?.* = cd.len;
+    return .ok;
+}
+
+/// The account's next nonce for a userop validated by `validator` (a secondary
+/// validator such as the weighted guardian validator), written into out[0..32]
+/// big-endian. This is the nonce the recovery hash binds to. The nonce key is
+/// the Kernel v3 encoding: mode 0x00 (default), type 0x01 (secondary), the
+/// validator address, then a zero custom key, matching what EntryPoint expects.
+pub export fn aa_account_nonce_for_validator(
+    account: ?*AccountImpl,
+    validator: ?[*]const u8,
+    out: ?[*]u8,
+) callconv(.c) Status {
+    const acc = account orelse return .null_account;
+    if (out == null or validator == null) return .null_out_ptr;
+
+    var key_bytes: [24]u8 = [_]u8{0} ** 24;
+    key_bytes[1] = 0x01; // secondary validator; mode and custom key stay zero
+    @memcpy(key_bytes[2..22], validator.?[0..20]);
+    const key: u192 = std.mem.readInt(u192, &key_bytes, .big);
+
+    var arena = std.heap.ArenaAllocator.init(acc.context.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Reads fall back to the bundler URL for callers that predate the split.
+    const read_url: []const u8 = if (acc.context.rpc_url.len > 0)
+        acc.context.rpc_url
+    else if (acc.context.bundler_url.len > 0)
+        acc.context.bundler_url
+    else
+        core.buildRpcUrl(a, acc.context.project_id, acc.context.chain_id) catch {
+            setLastError("failed to build read RPC URL", .{});
+            return .send_userop_failed;
+        };
+    var rpc = Client.init(a, read_url) catch {
+        setLastError("failed to create read RPC client", .{});
+        return .send_userop_failed;
+    };
+    wireTransport(&rpc, acc.context);
+
+    const nonce = entrypoint_mod.getNonce(&rpc, a, core.ENTRY_POINT_V07, acc.sender_address, key) catch |err| {
+        setLastError("getNonce failed: {s}", .{@errorName(err)});
+        return .send_userop_failed;
+    };
+    var buf: [32]u8 = undefined;
+    std.mem.writeInt(u256, &buf, nonce, .big);
+    @memcpy(out.?[0..32], &buf);
+    return .ok;
+}
+
+/// Keccak-256 of `data`, written into out[0..32]. Useful for host-side
+/// derivations (e.g. a passkey's authenticatorIdHash = keccak256(credentialId)).
+pub export fn aa_keccak256(
+    data: ?[*]const u8,
+    len: usize,
+    out: ?[*]u8,
+) callconv(.c) Status {
+    if (out == null) return .null_out_ptr;
+    const bytes = hostBytes(data, len) orelse {
+        setLastError("data is NULL but len is {d}", .{len});
+        return .null_out_ptr;
+    };
+    const h = keccak.hashBytes(bytes);
+    @memcpy(out.?[0..32], &h);
+    return .ok;
+}
+
+fn encodePluginCall(
+    install: bool,
+    module: ?[*]const u8,
+    validator_data: ?[*]const u8,
+    validator_data_len: usize,
+    out: ?*[*]u8,
+    out_len: ?*usize,
+) Status {
+    if (out == null or out_len == null) return .null_out_ptr;
+    if (module == null) return .null_out_ptr;
+
+    const allocator = defaultAllocator();
+    var mod: [20]u8 = undefined;
+    @memcpy(&mod, module.?[0..20]);
+    const vdata = hostBytes(validator_data, validator_data_len) orelse {
+        setLastError("validator_data is NULL but validator_data_len is {d}", .{validator_data_len});
+        return .null_out_ptr;
+    };
+
+    const cd = (if (install)
+        plugin.installValidatorCallData(allocator, mod, vdata)
+    else
+        plugin.changeRootValidatorCallData(allocator, mod, vdata)) catch {
+        setLastError("failed to encode plugin calldata", .{});
+        return .encode_failed;
+    };
+    out.?.* = cd.ptr;
+    out_len.?.* = cd.len;
+    return .ok;
+}
+
 // ---- Tests (offline; exercise the address-pinning branch of aa_account_create) ----
 
 const testing = std.testing;
@@ -1646,4 +2192,278 @@ test "aa_account_create: non-nil address → sender = passed bytes" {
     // using the pinned bytes and not silently ignoring them.
     const counterfactual = try create2.getKernelAddress(acc.?.owner_address, 0, .v3_3);
     try testing.expect(!std.mem.eql(u8, &counterfactual.bytes, &pinned_bytes));
+}
+
+// ---- Kernel version is a host-supplied c_int; a bare @intCast would trap in
+// safe builds and truncate in ReleaseFast (-256 → 0 → accepted as v3.3). Each
+// constructor must reject out-of-range and unknown values with a status. ----
+
+fn testNeverCalledWebAuthnSign(_: ?*anyopaque, _: *const [32]u8, _: *CWebAuthnAssertion) callconv(.c) c_int {
+    return 1;
+}
+
+test "kernel version: aa_account_create rejects out-of-range and unknown values" {
+    const env = testCreateCtxAndSigner();
+    defer _ = aa_context_destroy(env.ctx);
+    defer aa_signer_destroy(env.signer);
+
+    var acc: ?*AccountImpl = null;
+    for ([_]c_int{ -1, -256, 256, 99 }) |bad| {
+        try testing.expectEqual(Status.invalid_kernel_version, aa_account_create(env.ctx, env.signer, bad, 0, null, &acc));
+        try testing.expect(acc == null);
+    }
+}
+
+test "kernel version: aa_context_new_account_7702 rejects out-of-range and unknown values" {
+    const env = testCreateCtxAndSigner();
+    defer _ = aa_context_destroy(env.ctx);
+    defer aa_signer_destroy(env.signer);
+
+    var acc: ?*AccountImpl = null;
+    for ([_]c_int{ -1, -256, 256, 99 }) |bad| {
+        try testing.expectEqual(Status.invalid_kernel_version, aa_context_new_account_7702(env.ctx, env.signer, bad, &acc));
+        try testing.expect(acc == null);
+    }
+}
+
+test "kernel version: aa_account_create_passkey rejects out-of-range and unknown values" {
+    const env = testCreateCtxAndSigner();
+    defer _ = aa_context_destroy(env.ctx);
+    defer aa_signer_destroy(env.signer);
+
+    const zeros = [_]u8{0} ** 32;
+    var acc: ?*AccountImpl = null;
+    for ([_]c_int{ -1, -256, 256, 99 }) |bad| {
+        const status = aa_account_create_passkey(
+            env.ctx,
+            testNeverCalledWebAuthnSign,
+            null,
+            &zeros,
+            &zeros,
+            &zeros,
+            1, // contract_version v0.0.2
+            11155111,
+            bad,
+            0,
+            &acc,
+        );
+        try testing.expectEqual(Status.invalid_kernel_version, status);
+        try testing.expect(acc == null);
+    }
+}
+
+// ---- NULL with a non-zero length must be rejected, never treated as empty. ----
+
+test "hostBytes: NULL is only valid with len == 0" {
+    try testing.expectEqual(@as(usize, 0), hostBytes(null, 0).?.len);
+    try testing.expect(hostBytes(null, 1) == null);
+    const buf = [_]u8{ 1, 2, 3 };
+    try testing.expectEqualSlices(u8, &buf, hostBytes(&buf, 3).?);
+}
+
+test "aa_recovery_hash rejects NULL call_data with non-zero length" {
+    const sender = [_]u8{0xaa} ** 20;
+    const nonce = [_]u8{0} ** 32;
+    var out: [32]u8 = undefined;
+    try testing.expectEqual(Status.null_out_ptr, aa_recovery_hash(&sender, null, 100, &nonce, &out));
+    // NULL with len 0 is genuinely empty calldata and still succeeds.
+    try testing.expectEqual(Status.ok, aa_recovery_hash(&sender, null, 0, &nonce, &out));
+}
+
+test "aa_keccak256 rejects NULL data with non-zero length" {
+    var out: [32]u8 = undefined;
+    try testing.expectEqual(Status.null_out_ptr, aa_keccak256(null, 5, &out));
+    try testing.expectEqual(Status.ok, aa_keccak256(null, 0, &out));
+}
+
+test "aa_userop_build rejects a call whose calldata is NULL with non-zero length" {
+    const env = testCreateCtxAndSigner();
+    defer _ = aa_context_destroy(env.ctx);
+    defer aa_signer_destroy(env.signer);
+
+    var acc: ?*AccountImpl = null;
+    try testing.expectEqual(Status.ok, aa_account_create(env.ctx, env.signer, 0, 0, null, &acc));
+    defer _ = aa_account_destroy(acc);
+
+    var op: ?*UserOpImpl = null;
+    const bad = [_]CCall{.{ .target = [_]u8{0xaa} ** 20, .value_be = [_]u8{0} ** 32, .calldata = null, .calldata_len = 5 }};
+    try testing.expectEqual(Status.null_out_ptr, aa_userop_build(acc, &bad, 1, &op));
+    try testing.expect(op == null);
+
+    // Control: NULL with len 0 is an empty call and builds offline for CREATE2.
+    const ok = [_]CCall{.{ .target = [_]u8{0xaa} ** 20, .value_be = [_]u8{0} ** 32, .calldata = null, .calldata_len = 0 }};
+    try testing.expectEqual(Status.ok, aa_userop_build(acc, &ok, 1, &op));
+    defer _ = aa_userop_destroy(op);
+    try testing.expect(op != null);
+}
+
+// ---- Low-level build must agree with the account's own validator: initCode
+// deploys the same address `sender` claims, and the stub has the validator's
+// shape. The old code hard-coded the ECDSA factory and a 65-zero stub. ----
+
+test "aa_userop_build: passkey account gets WebAuthn initCode and stub, not ECDSA" {
+    const env = testCreateCtxAndSigner();
+    defer _ = aa_context_destroy(env.ctx);
+    defer aa_signer_destroy(env.signer);
+
+    var id_hash = [_]u8{0} ** 32;
+    id_hash[31] = 7;
+    var x = [_]u8{0} ** 32;
+    x[31] = 1;
+    var y = [_]u8{0} ** 32;
+    y[31] = 2;
+
+    var acc: ?*AccountImpl = null;
+    try testing.expectEqual(Status.ok, aa_account_create_passkey(
+        env.ctx, testNeverCalledWebAuthnSign, null, &x, &y, &id_hash, 1, 11155111, 0, 0, &acc,
+    ));
+    defer _ = aa_account_destroy(acc);
+
+    var op: ?*UserOpImpl = null;
+    const call = [_]CCall{.{ .target = [_]u8{0xaa} ** 20, .value_be = [_]u8{0} ** 32, .calldata = null, .calldata_len = 0 }};
+    try testing.expectEqual(Status.ok, aa_userop_build(acc, &call, 1, &op));
+    defer _ = aa_userop_destroy(op);
+    const o = op.?;
+
+    // initCode = MetaFactory (20 bytes) ++ factory calldata for THIS validator.
+    const mf = try Address.fromHex(core.META_FACTORY);
+    try testing.expectEqualSlices(u8, &mf.bytes, o.init_code[0..20]);
+    const enable = webauthn.WebAuthnValidator.encodeEnableData(1, 2, id_hash);
+    const expected_fd = try create2.buildFactoryCalldataGeneric(
+        testing.allocator,
+        Address.fromBytes(webauthn.validatorAddress(.v0_0_2)),
+        &enable,
+        0,
+        .v3_3,
+    );
+    defer testing.allocator.free(expected_fd);
+    try testing.expectEqualSlices(u8, expected_fd, o.init_code[20..]);
+
+    // ...and specifically NOT the ECDSA factory calldata the old code emitted.
+    const ecdsa_fd = try create2.buildFactoryCalldata(testing.allocator, acc.?.owner_address, 0, .v3_3);
+    defer testing.allocator.free(ecdsa_fd);
+    try testing.expect(!std.mem.eql(u8, ecdsa_fd, o.init_code[20..]));
+
+    // Stub is the WebAuthn dummy, not 65 zero bytes.
+    try testing.expectEqualSlices(u8, acc.?.getValidator().getStubSignature(), o.signature);
+    try testing.expect(o.signature.len != 65);
+}
+
+// ---- Passkey bridge ownership: host buffers are ours on a 0 return and must
+// be freed exactly once, even when validation or copying fails. ----
+
+const TestPasskey = struct {
+    mode: enum { ok, missing_der, refuse },
+    frees: usize = 0,
+
+    const cdj = "{\"type\":\"webauthn.get\",\"challenge\":\"AA\"}";
+    const auth_data = [_]u8{ 1, 2, 3, 4 };
+    // (r, high-S) vector shared with webauthn.zig's tests; valid strict DER.
+    const der_hex = "304502201234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef022100f012345e6789abcef012345f6789abcdacf92f0d0ea14a52e3cbff2263ecd11f";
+
+    fn allocCopy(bytes: []const u8) ?[*]const u8 {
+        const p: [*]u8 = @ptrCast(aa_alloc(bytes.len) orelse return null);
+        @memcpy(p[0..bytes.len], bytes);
+        return p;
+    }
+
+    fn sign(user_ctx: ?*anyopaque, _: *const [32]u8, out: *CWebAuthnAssertion) callconv(.c) c_int {
+        const self: *TestPasskey = @ptrCast(@alignCast(user_ctx.?));
+        if (self.mode == .refuse) return 1;
+        out.authenticator_data = allocCopy(&auth_data) orelse return 1;
+        out.authenticator_data_len = auth_data.len;
+        out.client_data_json = allocCopy(cdj) orelse return 1;
+        out.client_data_json_len = cdj.len;
+        if (self.mode == .missing_der) {
+            // Malformed: NULL with a non-zero length. The two buffers above are
+            // already the SDK's and must still be freed.
+            out.der_signature = null;
+            out.der_signature_len = 71;
+            return 0;
+        }
+        var der_buf: [71]u8 = undefined;
+        const der = std.fmt.hexToBytes(&der_buf, der_hex) catch return 1;
+        out.der_signature = allocCopy(der) orelse return 1;
+        out.der_signature_len = der.len;
+        return 0;
+    }
+
+    fn free(user_ctx: ?*anyopaque, buf: [*]u8, _: usize) callconv(.c) void {
+        const self: *TestPasskey = @ptrCast(@alignCast(user_ctx.?));
+        self.frees += 1;
+        std.c.free(buf);
+    }
+};
+
+fn testPasskeyAccount(ctx: *ContextImpl, pk: *TestPasskey) !*AccountImpl {
+    try testing.expectEqual(Status.ok, aa_context_set_webauthn_free_fn(ctx, TestPasskey.free));
+    var x = [_]u8{0} ** 32;
+    x[31] = 1;
+    var y = [_]u8{0} ** 32;
+    y[31] = 2;
+    const id_hash = [_]u8{0} ** 32;
+    var acc: ?*AccountImpl = null;
+    try testing.expectEqual(Status.ok, aa_account_create_passkey(
+        ctx, TestPasskey.sign, pk, &x, &y, &id_hash, 1, 11155111, 0, 0, &acc,
+    ));
+    return acc.?;
+}
+
+test "passkey bridge: success frees all three host buffers exactly once" {
+    const env = testCreateCtxAndSigner();
+    defer _ = aa_context_destroy(env.ctx);
+    defer aa_signer_destroy(env.signer);
+    var pk = TestPasskey{ .mode = .ok };
+    const acc = try testPasskeyAccount(env.ctx, &pk);
+    defer _ = aa_account_destroy(acc);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const sig = try acc.getValidator().signUserOp(arena.allocator(), [_]u8{0xab} ** 32);
+    try testing.expect(sig.len > 65); // ABI-encoded WebAuthn assertion, not ECDSA
+    try testing.expectEqual(@as(usize, 3), pk.frees);
+}
+
+test "passkey bridge: a malformed field still frees the buffers that were handed over" {
+    const env = testCreateCtxAndSigner();
+    defer _ = aa_context_destroy(env.ctx);
+    defer aa_signer_destroy(env.signer);
+    var pk = TestPasskey{ .mode = .missing_der };
+    const acc = try testPasskeyAccount(env.ctx, &pk);
+    defer _ = aa_account_destroy(acc);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    try testing.expectError(SignError.SigningFailed, acc.getValidator().signUserOp(arena.allocator(), [_]u8{0xab} ** 32));
+    try testing.expectEqual(@as(usize, 2), pk.frees);
+}
+
+test "passkey bridge: a non-zero return frees nothing (host keeps ownership)" {
+    const env = testCreateCtxAndSigner();
+    defer _ = aa_context_destroy(env.ctx);
+    defer aa_signer_destroy(env.signer);
+    var pk = TestPasskey{ .mode = .refuse };
+    const acc = try testPasskeyAccount(env.ctx, &pk);
+    defer _ = aa_account_destroy(acc);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    try testing.expectError(SignError.SigningFailed, acc.getValidator().signUserOp(arena.allocator(), [_]u8{0xab} ** 32));
+    try testing.expectEqual(@as(usize, 0), pk.frees);
+}
+
+test "aa_encode_webauthn_enable_data returns a 96-byte aa_free-owned buffer" {
+    var x = [_]u8{0} ** 32;
+    x[31] = 1;
+    var y = [_]u8{0} ** 32;
+    y[31] = 2;
+    var id_hash = [_]u8{0} ** 32;
+    id_hash[0] = 0xcc;
+    var out: [*]u8 = undefined;
+    var out_len: usize = 0;
+    try testing.expectEqual(Status.ok, aa_encode_webauthn_enable_data(&x, &y, &id_hash, &out, &out_len));
+    defer aa_free(out);
+    try testing.expectEqual(@as(usize, 96), out_len);
+    const expected = webauthn.WebAuthnValidator.encodeEnableData(1, 2, id_hash);
+    try testing.expectEqualSlices(u8, &expected, out[0..out_len]);
 }
