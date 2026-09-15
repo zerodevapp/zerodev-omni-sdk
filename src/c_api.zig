@@ -1150,12 +1150,10 @@ pub export fn aa_userop_build(
     var init_code: []u8 = &[_]u8{};
     var eip7702_auth: ?core.Authorization = null;
     if (acc.mode == .kernel_create2) {
-        const factory_data = create2.buildFactoryCalldata(
-            a,
-            acc.owner_address,
-            @as(u256, acc.index),
-            acc.kernel_version,
-        ) catch {
+        // Dispatches on validator_kind — the high-level aa_send_userop path
+        // already does this; a bare ECDSA factory here gave passkey accounts an
+        // initCode whose CREATE2 result did not match `sender`.
+        const factory_data = acc.buildFactoryData(a) catch {
             setLastError("failed to build factory calldata", .{});
             return .build_userop_failed;
         };
@@ -1191,11 +1189,11 @@ pub export fn aa_userop_build(
         };
     }
 
-    // Stub signature (65 zero bytes)
-    const stub_sig = a.alloc(u8, 65) catch {
+    // Stub signature in the validator's own shape (65 zero bytes for ECDSA, the
+    // structured WebAuthn dummy for passkeys) so gas estimation is realistic.
+    const stub_sig = a.dupe(u8, acc.getValidator().getStubSignature()) catch {
         return .out_of_memory;
     };
-    @memset(stub_sig, 0);
 
     const impl = allocator.create(UserOpImpl) catch {
         return .out_of_memory;
@@ -2237,4 +2235,56 @@ test "aa_userop_build rejects a call whose calldata is NULL with non-zero length
     try testing.expectEqual(Status.ok, aa_userop_build(acc, &ok, 1, &op));
     defer _ = aa_userop_destroy(op);
     try testing.expect(op != null);
+}
+
+// ---- Low-level build must agree with the account's own validator: initCode
+// deploys the same address `sender` claims, and the stub has the validator's
+// shape. The old code hard-coded the ECDSA factory and a 65-zero stub. ----
+
+test "aa_userop_build: passkey account gets WebAuthn initCode and stub, not ECDSA" {
+    const env = testCreateCtxAndSigner();
+    defer _ = aa_context_destroy(env.ctx);
+    defer aa_signer_destroy(env.signer);
+
+    var id_hash = [_]u8{0} ** 32;
+    id_hash[31] = 7;
+    var x = [_]u8{0} ** 32;
+    x[31] = 1;
+    var y = [_]u8{0} ** 32;
+    y[31] = 2;
+
+    var acc: ?*AccountImpl = null;
+    try testing.expectEqual(Status.ok, aa_account_create_passkey(
+        env.ctx, testNeverCalledWebAuthnSign, null, &x, &y, &id_hash, 1, 11155111, 0, 0, &acc,
+    ));
+    defer _ = aa_account_destroy(acc);
+
+    var op: ?*UserOpImpl = null;
+    const call = [_]CCall{.{ .target = [_]u8{0xaa} ** 20, .value_be = [_]u8{0} ** 32, .calldata = null, .calldata_len = 0 }};
+    try testing.expectEqual(Status.ok, aa_userop_build(acc, &call, 1, &op));
+    defer _ = aa_userop_destroy(op);
+    const o = op.?;
+
+    // initCode = MetaFactory (20 bytes) ++ factory calldata for THIS validator.
+    const mf = try Address.fromHex(core.META_FACTORY);
+    try testing.expectEqualSlices(u8, &mf.bytes, o.init_code[0..20]);
+    const enable = webauthn.WebAuthnValidator.encodeEnableData(1, 2, id_hash);
+    const expected_fd = try create2.buildFactoryCalldataGeneric(
+        testing.allocator,
+        Address.fromBytes(webauthn.validatorAddress(.v0_0_2)),
+        &enable,
+        0,
+        .v3_3,
+    );
+    defer testing.allocator.free(expected_fd);
+    try testing.expectEqualSlices(u8, expected_fd, o.init_code[20..]);
+
+    // ...and specifically NOT the ECDSA factory calldata the old code emitted.
+    const ecdsa_fd = try create2.buildFactoryCalldata(testing.allocator, acc.?.owner_address, 0, .v3_3);
+    defer testing.allocator.free(ecdsa_fd);
+    try testing.expect(!std.mem.eql(u8, ecdsa_fd, o.init_code[20..]));
+
+    // Stub is the WebAuthn dummy, not 65 zero bytes.
+    try testing.expectEqualSlices(u8, acc.?.getValidator().getStubSignature(), o.signature);
+    try testing.expect(o.signature.len != 65);
 }
