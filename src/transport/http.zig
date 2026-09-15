@@ -1,19 +1,22 @@
 //! HTTP POST with proper gzip decompression and chunked transfer support.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const http = std.http;
+const ca_bundle = @import("ca_bundle.zig");
 
-/// HTTP POST returning the decompressed body. The first try uses the system
-/// trust store; if that has nothing to scan (iOS, Android) TLS fails and we
-/// retry with the embedded CA bundle.
+/// Targets where a sandboxed app has no dependable system trust store: Apple
+/// mobile (std's Bundle.rescan is a no-op there) and Android (the store exists
+/// but may be relocated or unreadable from an app, e.g. Android 14+ moved it
+/// into the Conscrypt APEX). Everywhere else the system store is authoritative
+/// and the embedded bundle is never consulted.
+const mobile_trust_store = switch (builtin.os.tag) {
+    .ios, .tvos, .watchos, .visionos => true,
+    else => builtin.abi.isAndroid(),
+};
+
+/// HTTP POST returning the decompressed body.
 pub fn post(allocator: std.mem.Allocator, url: []const u8, payload: []const u8) ![]u8 {
-    return postOnce(allocator, url, payload, false) catch |err| switch (err) {
-        error.TlsInitializationFailed, error.CertificateBundleLoadFailure => try postOnce(allocator, url, payload, true),
-        else => err,
-    };
-}
-
-fn postOnce(allocator: std.mem.Allocator, url: []const u8, payload: []const u8, use_embedded_ca: bool) ![]u8 {
     const uri = try std.Uri.parse(url);
 
     // Zig 0.16 requires an `Io` instance to be passed to the HTTP client for
@@ -23,8 +26,7 @@ fn postOnce(allocator: std.mem.Allocator, url: []const u8, payload: []const u8, 
     var client = http.Client{ .allocator = allocator, .io = io };
     defer client.deinit();
 
-    // System trust store was unavailable, so use the embedded roots.
-    if (use_embedded_ca) try @import("ca_bundle.zig").install(&client, allocator, io);
+    try prepareTrustStore(&client, allocator, io, mobile_trust_store);
 
     var req = try client.request(.POST, uri, .{
         .extra_headers = &.{
@@ -45,4 +47,78 @@ fn postOnce(allocator: std.mem.Allocator, url: []const u8, payload: []const u8, 
 
     var reader = response.readerDecompressing(&transfer_buf, &decompress, decompress_buf);
     return try reader.allocRemaining(allocator, std.Io.Limit.limited(10 * 1024 * 1024));
+}
+
+/// Decide the trust store BEFORE connecting - never in response to a
+/// handshake failure. Zig reports a rejected certificate chain with the same
+/// TlsInitializationFailed as "no roots found", so a retry-on-failure would
+/// re-trust, via the embedded Mozilla set, a root the system store had
+/// deliberately excluded.
+///
+/// Desktop/server (`mobile` false): leave the client alone. request() scans
+/// the system store exactly as it did before the embedded bundle existed.
+///
+/// Mobile: scan the system store first and keep it if it yields any roots.
+/// Install the embedded roots only if the scan finds nothing (store absent,
+/// or the no-op scan on Apple mobile) or cannot read the store at all - on
+/// these targets the only alternative is no TLS.
+fn prepareTrustStore(client: *http.Client, allocator: std.mem.Allocator, io: std.Io, mobile: bool) !void {
+    if (!mobile) return;
+    const now = std.Io.Clock.real.now(io);
+    const have_system_roots = blk: {
+        client.ca_bundle.rescan(allocator, io, now) catch break :blk false;
+        break :blk client.ca_bundle.map.count() > 0;
+    };
+    if (have_system_roots) {
+        // A set clock makes request() skip its own rescan.
+        client.now = now;
+        return;
+    }
+    // Drop anything a failed partial scan may have left so we do not union an
+    // unknown subset of the system store with the Mozilla roots.
+    client.ca_bundle.bytes.clearRetainingCapacity();
+    client.ca_bundle.map.clearRetainingCapacity();
+    try ca_bundle.install(client, allocator, io);
+}
+
+// -- Tests -------------------------------------------------------------------
+// The mobile branch cannot be exercised end-to-end on a desktop host (the
+// system scan here always finds roots), so these pin the three observable
+// behaviours: non-mobile is untouched, mobile keeps a non-empty system store
+// without adding embedded roots, and the embedded install itself works.
+
+const testing = std.testing;
+
+test "prepareTrustStore: non-mobile leaves the client to request()'s system scan" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var client = http.Client{ .allocator = testing.allocator, .io = io };
+    defer client.deinit();
+    try prepareTrustStore(&client, testing.allocator, io, false);
+    try testing.expect(client.now == null);
+    try testing.expectEqual(@as(usize, 0), client.ca_bundle.map.count());
+}
+
+test "prepareTrustStore: mobile keeps a system store that yields roots, adds nothing" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var client = http.Client{ .allocator = testing.allocator, .io = io };
+    defer client.deinit();
+    try prepareTrustStore(&client, testing.allocator, io, true);
+    try testing.expect(client.now != null);
+    try testing.expect(client.ca_bundle.map.count() > 0);
+
+    // Must equal a plain system scan - i.e. the embedded roots were NOT added.
+    var reference = http.Client{ .allocator = testing.allocator, .io = io };
+    defer reference.deinit();
+    try reference.ca_bundle.rescan(testing.allocator, io, std.Io.Clock.real.now(io));
+    try testing.expectEqual(reference.ca_bundle.map.count(), client.ca_bundle.map.count());
+}
+
+test "embedded bundle installs the Mozilla roots into an empty client" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var client = http.Client{ .allocator = testing.allocator, .io = io };
+    defer client.deinit();
+    try ca_bundle.install(&client, testing.allocator, io);
+    // 119 certificates in the 2026-07-16 bundle; allow for subject dedup.
+    try testing.expect(client.ca_bundle.map.count() > 100);
+    try testing.expect(client.now != null);
 }
