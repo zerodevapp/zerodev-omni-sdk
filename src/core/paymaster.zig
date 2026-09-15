@@ -108,7 +108,9 @@ pub fn packPaymasterAndData(
     post_op_gas_limit: u128,
     paymaster_data: []const u8,
 ) ![]u8 {
-    const len = 20 + 16 + 16 + paymaster_data.len;
+    // Checked: paymaster_data is whatever a host middleware returned over the
+    // C API, so its length is untrusted and must not wrap the allocation.
+    const len = try std.math.add(usize, 20 + 16 + 16, paymaster_data.len);
     const buf = try allocator.alloc(u8, len);
     @memcpy(buf[0..20], &paymaster.bytes);
     const verif_be: [16]u8 = @bitCast(@byteSwap(verification_gas_limit));
@@ -119,4 +121,14 @@ pub fn packPaymasterAndData(
         @memcpy(buf[52..], paymaster_data);
     }
     return buf;
+}
+
+test "packPaymasterAndData rejects a paymaster_data length that overflows" {
+    // Never dereferenced: sizing must reject it before allocating or copying.
+    var hostile: []const u8 = &[_]u8{};
+    hostile.len = std.math.maxInt(usize) - 40;
+    try std.testing.expectError(
+        error.Overflow,
+        packPaymasterAndData(std.testing.allocator, Address.fromBytes([_]u8{0} ** 20), 0, 0, hostile),
+    );
 }
