@@ -43,22 +43,40 @@ pub fn wordAddress(addr: [20]u8) [32]u8 {
     return w;
 }
 
-/// Round a byte length up to the next 32-byte boundary.
-fn paddedLen(len: usize) usize {
-    return (len + 31) / 32 * 32;
+/// Round a byte length up to the next 32-byte boundary. Checked: a `len`
+/// within 31 of `usize.max` can only arrive as a hostile length across the C
+/// boundary, and letting it wrap would size the output far too small for the
+/// later memcpy.
+fn paddedLen(len: usize) error{Overflow}!usize {
+    const rounded = try std.math.add(usize, len, 31);
+    return rounded / 32 * 32;
 }
 
 /// ABI-encode a sequence of top-level parameters. The caller owns the result.
+///
+/// Every size computation is checked separately — the padding add, the
+/// length-word add, the dyn_words multiply, each accumulation, and the final
+/// total — so any length that would overflow returns `error.Overflow` before
+/// anything is allocated or copied.
 pub fn encode(allocator: std.mem.Allocator, params: []const Value) ![]u8 {
-    const head_len = params.len * 32;
+    const head_len = try std.math.mul(usize, params.len, 32);
     var tail_len: usize = 0;
     for (params) |p| switch (p) {
         .word => {},
-        .dyn_bytes => |b| tail_len += 32 + paddedLen(b.len),
-        .dyn_words => |ws| tail_len += 32 + ws.len * 32,
+        .dyn_bytes => |b| {
+            const padded = try paddedLen(b.len);
+            const item = try std.math.add(usize, 32, padded);
+            tail_len = try std.math.add(usize, tail_len, item);
+        },
+        .dyn_words => |ws| {
+            const words = try std.math.mul(usize, ws.len, 32);
+            const item = try std.math.add(usize, 32, words);
+            tail_len = try std.math.add(usize, tail_len, item);
+        },
     };
 
-    const buf = try allocator.alloc(u8, head_len + tail_len);
+    const total = try std.math.add(usize, head_len, tail_len);
+    const buf = try allocator.alloc(u8, total);
     @memset(buf, 0);
 
     var head: usize = 0;
@@ -78,7 +96,8 @@ pub fn encode(allocator: std.mem.Allocator, params: []const Value) ![]u8 {
             @memcpy(buf[tail..][0..32], &len);
             tail += 32;
             @memcpy(buf[tail..][0..b.len], b);
-            tail += paddedLen(b.len);
+            // Cannot fail: the same value was validated in the sizing pass above.
+            tail += try paddedLen(b.len);
         },
         .dyn_words => |ws| {
             const off = word256(tail);
@@ -107,6 +126,33 @@ fn expectHex(expected_hex: []const u8, actual: []const u8) !void {
     var buf: [2048]u8 = undefined;
     const expected = try std.fmt.hexToBytes(&buf, expected_hex);
     try testing.expectEqualSlices(u8, expected, actual);
+}
+
+// Hostile lengths arrive over the C API (e.g. aa_recovery_hash). These slices
+// are never dereferenced — sizing must reject them before allocating or copying.
+test "paddedLen rejects lengths within 31 of usize.max" {
+    const max = std.math.maxInt(usize);
+    try testing.expectError(error.Overflow, paddedLen(max));
+    try testing.expectError(error.Overflow, paddedLen(max - 30));
+    // Exactly 31 below max rounds without wrapping and is already 32-aligned.
+    try testing.expectEqual(max - 31, try paddedLen(max - 31));
+}
+
+test "encode rejects a dyn_bytes length that overflows the total" {
+    var hostile: []const u8 = &[_]u8{};
+
+    // paddedLen succeeds here; the 32-byte length word add pushes it over.
+    hostile.len = std.math.maxInt(usize) - 31;
+    try testing.expectError(error.Overflow, encode(testing.allocator, &.{.{ .dyn_bytes = hostile }}));
+
+    hostile.len = std.math.maxInt(usize);
+    try testing.expectError(error.Overflow, encode(testing.allocator, &.{.{ .dyn_bytes = hostile }}));
+}
+
+test "encode rejects a dyn_words count that overflows" {
+    var hostile: []const [32]u8 = &[_][32]u8{};
+    hostile.len = std.math.maxInt(usize) / 32 + 1; // * 32 overflows
+    try testing.expectError(error.Overflow, encode(testing.allocator, &.{.{ .dyn_words = hostile }}));
 }
 
 test "word256 is big-endian" {
