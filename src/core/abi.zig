@@ -149,6 +149,12 @@ test "encode rejects a dyn_bytes length that overflows the total" {
     try testing.expectError(error.Overflow, encode(testing.allocator, &.{.{ .dyn_bytes = hostile }}));
 }
 
+test "encode rejects two dyn_bytes that fit alone but overflow together" {
+    var half: []const u8 = &[_]u8{};
+    half.len = @as(usize, 1) << (@bitSizeOf(usize) - 1); // each item sizes to 2^63 + 32
+    try testing.expectError(error.Overflow, encode(testing.allocator, &.{ .{ .dyn_bytes = half }, .{ .dyn_bytes = half } }));
+}
+
 test "encode rejects a dyn_words count that overflows" {
     var hostile: []const [32]u8 = &[_][32]u8{};
     hostile.len = std.math.maxInt(usize) / 32 + 1; // * 32 overflows

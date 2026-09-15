@@ -403,6 +403,15 @@ pub export fn aa_context_set_http_transport(
 /// Audit F-02. Register a free function for response buffers returned by
 /// the HTTP transport. Pass NULL to clear (the SDK then frees with libc
 /// free — safe only when the host allocates via `aa_alloc` or libc malloc).
+pub export fn aa_context_set_http_free_fn(
+    ctx: ?*ContextImpl,
+    free_fn: ?transport.HttpFreeFn,
+) callconv(.c) Status {
+    const c = ctx orelse return .null_context;
+    c.http_free_fn = free_fn;
+    return .ok;
+}
+
 /// Register a free function for the buffers a passkey sign callback returns.
 /// NULL clears it; the SDK then frees with libc free (safe for aa_alloc).
 pub export fn aa_context_set_webauthn_free_fn(
@@ -411,15 +420,6 @@ pub export fn aa_context_set_webauthn_free_fn(
 ) callconv(.c) Status {
     const c = ctx orelse return .null_context;
     c.webauthn_free_fn = free_fn;
-    return .ok;
-}
-
-pub export fn aa_context_set_http_free_fn(
-    ctx: ?*ContextImpl,
-    free_fn: ?transport.HttpFreeFn,
-) callconv(.c) Status {
-    const c = ctx orelse return .null_context;
-    c.http_free_fn = free_fn;
     return .ok;
 }
 
@@ -762,11 +762,14 @@ pub const PasskeyBridge = struct {
         // An assertion with an empty component is malformed.
         if (ad.len == 0 or cd.len == 0 or der.len == 0) return SignError.SigningFailed;
 
-        return .{
-            .authenticator_data = try allocator.dupe(u8, ad),
-            .client_data_json = try allocator.dupe(u8, cd),
-            .der_signature = try allocator.dupe(u8, der),
-        };
+        // Our own copies are freed on a later failure too, so a caller with a
+        // non-arena allocator does not leak the earlier ones.
+        const ad_copy = try allocator.dupe(u8, ad);
+        errdefer allocator.free(ad_copy);
+        const cd_copy = try allocator.dupe(u8, cd);
+        errdefer allocator.free(cd_copy);
+        const der_copy = try allocator.dupe(u8, der);
+        return .{ .authenticator_data = ad_copy, .client_data_json = cd_copy, .der_signature = der_copy };
     }
 
     fn freeHostBuf(self: *PasskeyBridge, ptr: ?[*]const u8, len: usize) void {
@@ -1673,7 +1676,9 @@ pub export fn aa_send_userop(
         const stub_json_val = user_op.toJsonValue(a, stub_sig) catch return .serialize_failed;
         const stub_json_str = std.json.Stringify.valueAlloc(a, stub_json_val, .{}) catch return .serialize_failed;
 
-        var pm_result: PaymasterResult = undefined;
+        // Zeroed so a middleware that returns .ok without filling every field
+        // leaves NULL, not garbage, in the pointer the defer below frees.
+        var pm_result: PaymasterResult = std.mem.zeroes(PaymasterResult);
         const pm_status = mw(acc.context, stub_json_str.ptr, stub_json_str.len, ep_hex, chain_id, .stub, &pm_result);
         if (pm_status != .ok) return pm_status;
         defer if (pm_result.paymaster_data) |p| freePaymasterData(acc.context, p, pm_result.paymaster_data_len);
@@ -1739,7 +1744,9 @@ pub export fn aa_send_userop(
         const final_json_val = user_op.toJsonValue(a, final_sig) catch return .serialize_failed;
         const final_json_str = std.json.Stringify.valueAlloc(a, final_json_val, .{}) catch return .serialize_failed;
 
-        var pm_result: PaymasterResult = undefined;
+        // Zeroed so a middleware that returns .ok without filling every field
+        // leaves NULL, not garbage, in the pointer the defer below frees.
+        var pm_result: PaymasterResult = std.mem.zeroes(PaymasterResult);
         const pm_status = mw(acc.context, final_json_str.ptr, final_json_str.len, ep_hex, chain_id, .final, &pm_result);
         if (pm_status != .ok) return pm_status;
         defer if (pm_result.paymaster_data) |p| freePaymasterData(acc.context, p, pm_result.paymaster_data_len);
@@ -2450,6 +2457,23 @@ test "passkey bridge: a non-zero return frees nothing (host keeps ownership)" {
     defer arena.deinit();
     try testing.expectError(SignError.SigningFailed, acc.getValidator().signUserOp(arena.allocator(), [_]u8{0xab} ** 32));
     try testing.expectEqual(@as(usize, 0), pk.frees);
+}
+
+test "passkey bridge: a failed copy of any buffer still frees all three" {
+    const env = testCreateCtxAndSigner();
+    defer _ = aa_context_destroy(env.ctx);
+    defer aa_signer_destroy(env.signer);
+    var pk = TestPasskey{ .mode = .ok };
+    const acc = try testPasskeyAccount(env.ctx, &pk);
+    defer _ = aa_account_destroy(acc);
+
+    // The three dupes in signImpl are the first three allocations of a sign.
+    for (0..3) |fail_index| {
+        pk.frees = 0;
+        var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = fail_index });
+        try testing.expectError(SignError.OutOfMemory, acc.getValidator().signUserOp(failing.allocator(), [_]u8{0xab} ** 32));
+        try testing.expectEqual(@as(usize, 3), pk.frees);
+    }
 }
 
 test "aa_encode_webauthn_enable_data returns a 96-byte aa_free-owned buffer" {

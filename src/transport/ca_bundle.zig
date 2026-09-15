@@ -1,5 +1,7 @@
-//! Mozilla CA roots baked into the binary, for iOS and Android where the http
-//! client has no system certificate store to scan and TLS can't otherwise start.
+//! Mozilla CA roots baked into the binary, for mobile targets where the http
+//! client may find no usable system certificate store: Apple mobile has none to
+//! scan, and Android's may be relocated or unreadable from an app. Installed
+//! only when the system scan yields nothing (see http.zig prepareTrustStore).
 
 const std = @import("std");
 const http = std.http;

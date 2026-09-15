@@ -66,9 +66,20 @@ fn prepareTrustStore(client: *http.Client, allocator: std.mem.Allocator, io: std
     if (!mobile) return;
     const now = std.Io.Clock.real.now(io);
     const have_system_roots = blk: {
-        client.ca_bundle.rescan(allocator, io, now) catch break :blk false;
+        client.ca_bundle.rescan(allocator, io, now) catch |err| switch (err) {
+            // Resource failures are not "no store": surface them.
+            error.OutOfMemory, error.Canceled => return err,
+            else => break :blk false,
+        };
         break :blk client.ca_bundle.map.count() > 0;
     };
+    try chooseTrustStore(client, allocator, io, now, have_system_roots);
+}
+
+/// Keep the system roots the scan found, or replace whatever it left behind
+/// with the embedded bundle. Split from the scan so the fallback branch is
+/// testable on a desktop host, where the scan never comes up empty.
+fn chooseTrustStore(client: *http.Client, allocator: std.mem.Allocator, io: std.Io, now: std.Io.Timestamp, have_system_roots: bool) !void {
     if (have_system_roots) {
         // A set clock makes request() skip its own rescan.
         client.now = now;
@@ -121,4 +132,30 @@ test "embedded bundle installs the Mozilla roots into an empty client" {
     // 119 certificates in the 2026-07-16 bundle; allow for subject dedup.
     try testing.expect(client.ca_bundle.map.count() > 100);
     try testing.expect(client.now != null);
+}
+
+test "chooseTrustStore: an empty system scan installs the embedded roots" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var client = http.Client{ .allocator = testing.allocator, .io = io };
+    defer client.deinit();
+    try chooseTrustStore(&client, testing.allocator, io, std.Io.Clock.real.now(io), false);
+    try testing.expect(client.ca_bundle.map.count() > 100);
+    try testing.expect(client.now != null);
+}
+
+test "chooseTrustStore: the fallback replaces a partial scan rather than adding to it" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const now = std.Io.Clock.real.now(io);
+    var embedded_only = http.Client{ .allocator = testing.allocator, .io = io };
+    defer embedded_only.deinit();
+    try ca_bundle.install(&embedded_only, testing.allocator, io);
+
+    // A client whose store already holds the system roots stands in for a
+    // partial scan; the fallback must end with exactly the embedded set.
+    var client = http.Client{ .allocator = testing.allocator, .io = io };
+    defer client.deinit();
+    try client.ca_bundle.rescan(testing.allocator, io, now);
+    try testing.expect(client.ca_bundle.map.count() > 0);
+    try chooseTrustStore(&client, testing.allocator, io, now, false);
+    try testing.expectEqual(embedded_only.ca_bundle.map.count(), client.ca_bundle.map.count());
 }

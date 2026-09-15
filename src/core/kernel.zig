@@ -148,6 +148,15 @@ test "encodeExecuteBatch rejects data lengths that overflow sizing" {
     try std.testing.expectError(error.Overflow, encodeExecuteBatch(allocator, &execs));
 }
 
+test "encodeExecuteBatch rejects executions that fit alone but overflow together" {
+    const allocator = std.testing.allocator;
+    const to = try Address.fromHex("0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045");
+    var half: []const u8 = &[_]u8{};
+    half.len = @as(usize, 1) << (@bitSizeOf(usize) - 1); // each tuple sizes to 2^63 + 128
+    const execs = [_]Execution{ .{ .to = to, .value = 0, .data = half }, .{ .to = to, .value = 0, .data = half } };
+    try std.testing.expectError(error.Overflow, encodeExecuteBatch(allocator, &execs));
+}
+
 test "encodeExecute correct selector" {
     const allocator = std.testing.allocator;
     const to = try Address.fromHex("0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045");
